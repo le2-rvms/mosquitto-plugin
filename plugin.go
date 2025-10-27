@@ -210,10 +210,6 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 	if rc := C.register_event_callback(pid, C.MOSQ_EVT_BASIC_AUTH, C.mosq_event_cb(C.basic_auth_cb_c)); rc != C.MOSQ_ERR_SUCCESS {
 		return rc
 	}
-	if rc := C.register_event_callback(pid, C.MOSQ_EVT_ACL_CHECK, C.mosq_event_cb(C.acl_check_cb_c)); rc != C.MOSQ_ERR_SUCCESS {
-		C.unregister_event_callback(pid, C.MOSQ_EVT_BASIC_AUTH, C.mosq_event_cb(C.basic_auth_cb_c))
-		return rc
-	}
 
 	mosqLog(C.MOSQ_LOG_INFO, "mosq-pg: plugin initialized")
 	return C.MOSQ_ERR_SUCCESS
@@ -225,7 +221,6 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 //
 //export go_mosq_plugin_cleanup
 func go_mosq_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_opt, optCount C.int) C.int {
-	C.unregister_event_callback(pid, C.MOSQ_EVT_ACL_CHECK, C.mosq_event_cb(C.acl_check_cb_c))
 	C.unregister_event_callback(pid, C.MOSQ_EVT_BASIC_AUTH, C.mosq_event_cb(C.basic_auth_cb_c))
 	if pool != nil {
 		pool.Close()
@@ -259,26 +254,7 @@ func basic_auth_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Poi
 
 //export acl_check_cb_c
 func acl_check_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointer) C.int {
-	ed := (*C.struct_mosquitto_evt_acl_check)(event_data)
-	username := cstr(C.mosquitto_client_username(ed.client))
-	clientID := cstr(C.mosquitto_client_id(ed.client))
-	ipAddr := cstr(C.mosquitto_client_address(ed.client))
-	topic := cstr(ed.topic)
-	access := int(ed.access) // READ=1, WRITE=2, SUBSCRIBE=4
-
-	allow, err := dbACL(username, clientID, ipAddr, topic, access)
-	if err != nil {
-		mosqLog(C.MOSQ_LOG_WARNING, "mosq-pg acl error: "+err.Error())
-		if failOpen {
-			mosqLog(C.MOSQ_LOG_INFO, "mosq-pg: fail_open=true, allowing ACL despite error")
-			return C.MOSQ_ERR_SUCCESS
-		}
-		return C.MOSQ_ERR_ACL_DENIED
-	}
-	if allow {
-		return C.MOSQ_ERR_SUCCESS
-	}
-	return C.MOSQ_ERR_ACL_DENIED
+	return C.MOSQ_ERR_PLUGIN_DEFER
 }
 
 // ----------------- PostgreSQL 逻辑（与你现有一致） -----------------
@@ -329,31 +305,6 @@ func dbAuth(username, password, clientID string) (bool, error) {
 			return false, err
 		}
 	}
-	return true, nil
-}
-
-func dbACL(username, _ string, ipAddr, topic string, access int) (bool, error) {
-	isSubscribe := access&4 != 0
-
-	// Allow dashboard user to subscribe to $SYS/#.
-	if username == "dashboard" && isSubscribe && topic == "$SYS/#" {
-		return true, nil
-	}
-
-	// Allow all operations for clients connected from 127.0.0.1.
-	if ipAddr == "127.0.0.1" {
-		return true, nil
-	}
-
-	// Deny subscriptions to critical system wildcards for everyone else.
-	if isSubscribe {
-		switch topic {
-		case "$SYS/#", "#", "+/#":
-			return false, nil
-		}
-	}
-
-	// Default allow.
 	return true, nil
 }
 
