@@ -1,4 +1,4 @@
-module example.com/mosq-pg-v5
+module mosq-pg-v5
 
 go 1.23.0
 

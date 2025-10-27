@@ -1,4 +1,4 @@
-SHELL := /bin/bash
+#SHELL := /bin/bash
 BINARY_DIR := build
 SO := $(BINARY_DIR)/mosq_pg_auth.so
 BCRYPT := $(BINARY_DIR)/bcryptgen
@@ -35,3 +35,6 @@ docker-run:
 	  -v $(PWD)/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro \
 	  -v $(PWD)/build/mosq_pg_auth.so:/mosquitto/plugins/mosq_pg_auth.so:ro \
 	  eclipse-mosquitto:2
+
+local-run:
+	mosquitto -c ./mosquitto.conf

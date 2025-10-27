@@ -2,38 +2,32 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
-	"log"
 	"os"
-
-	"golang.org/x/crypto/bcrypt"
+	"strings"
 )
 
 func main() {
-	cost := flag.Int("cost", 12, "bcrypt cost (10-14 recommended)")
+	salt := flag.String("salt", "", "salt")
 	flag.Parse()
 
-	var pass string
+	var pwd string
 	if flag.NArg() > 0 {
-		pass = flag.Arg(0)
+		pwd = flag.Arg(0)
 	} else {
 		fmt.Print("Password: ")
-		reader := bufio.NewReader(os.Stdin)
-		p, _ := reader.ReadString('\n')
-		pass = p
+		s, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		pwd = strings.TrimRight(s, "\r\n")
 	}
-	pass = trimNL(pass)
-	hash, err := bcrypt.GenerateFromPassword([]byte(pass), *cost)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(string(hash))
+
+	en_pwd := sha256PwdSalt(pwd, *salt)
+	fmt.Printf(en_pwd)
 }
 
-func trimNL(s string) string {
-	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
-		s = s[:len(s)-1]
-	}
-	return s
+func sha256PwdSalt(pwd, salt string) string {
+	sum := sha256.Sum256([]byte(pwd + salt))
+	return hex.EncodeToString(sum[:])
 }

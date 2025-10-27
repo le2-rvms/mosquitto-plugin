@@ -9,6 +9,9 @@ package main
 #include <mosquitto_plugin.h>
 #include <mosquitto_broker.h>
 
+
+typedef void* pvoid;
+
 int register_basic_auth(mosquitto_plugin_id_t *id);
 int unregister_basic_auth(mosquitto_plugin_id_t *id);
 int register_acl_check(mosquitto_plugin_id_t *id);
@@ -20,6 +23,10 @@ import "C"
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -33,23 +40,47 @@ import (
 var (
 	pid         *C.mosquitto_plugin_id_t
 	pool        *pgxpool.Pool
-	pgDSN       = ""    // e.g. postgres://user:pass@host:5432/db?sslmode=verify-full
-	timeoutMS   = 1500  // query timeout in ms
-	failOpen    = false // if true, allow when DB fails (NOT recommended for security)
-	enforceBind = false // if true, require username+clientID binding
+	pgDSN       = "" // postgres://user:pass@host:5432/db?sslmode=verify-full
+	timeoutMS   = 1500
+	failOpen    = false
+	enforceBind = false
+	debugLogs   = envBool("MOSQ_PG_DEBUG")
 )
 
 func mosqLog(level C.int, s string) {
 	cs := C.CString(s)
 	defer C.free(unsafe.Pointer(cs))
 	C.go_mosq_log(level, cs)
+	if debugLogs {
+		fmt.Fprintf(os.Stderr, "mosq-pg: %s\n", s)
+	}
 }
+func mosqLogf(level C.int, format string, args ...any) { mosqLog(level, fmt.Sprintf(format, args...)) }
 
 func cstr(s *C.char) string {
 	if s == nil {
 		return ""
 	}
 	return C.GoString(s)
+}
+func envBool(name string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+func safeDSN(dsn string) string {
+	if dsn == "" {
+		return ""
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return dsn
+	}
+	if u.User != nil {
+		if _, has := u.User.Password(); has {
+			u.User = url.UserPassword(u.User.Username(), "xxxxx")
+		}
+	}
+	return u.String()
 }
 
 // --- Version negotiation ---
@@ -64,14 +95,22 @@ func go_mosq_plugin_version(count C.int, versions *C.int) C.int {
 	return -1
 }
 
-// --- Init ---
+// --- Init （注意：userdata 是 void**，这里用 **C.pvoid 对应）---
 //
-//export mosquitto_plugin_init
-func mosquitto_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
-	opts *C.struct_mosquitto_opt, optCount C.int) C.int {
+//export go_mosq_plugin_init
+func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
+	opts *C.struct_mosquitto_opt, optCount C.int) (rc C.int) {
+
+	defer func() {
+		if r := recover(); r != nil {
+			mosqLogf(C.MOSQ_LOG_ERR, "mosq-pg: panic in plugin_init: %v\n%s", r, string(debug.Stack()))
+			rc = C.MOSQ_ERR_UNKNOWN
+		}
+	}()
+
 	pid = id
 
-	// Read plugin_opt_* from mosquitto.conf
+	// 读取 plugin_opt_*
 	for _, o := range unsafe.Slice(opts, int(optCount)) {
 		k, v := cstr(o.key), cstr(o.value)
 		switch k {
@@ -88,31 +127,36 @@ func mosquitto_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer
 		}
 	}
 	if pgDSN == "" {
-		mosqLog(C.MOSQ_LOG_ERR, ("mosq-pg: pg_dsn must be set"))
+		mosqLog(C.MOSQ_LOG_ERR, "mosq-pg: pg_dsn must be set")
 		return C.MOSQ_ERR_UNKNOWN
 	}
 
-	// Create PG pool
+	mosqLogf(C.MOSQ_LOG_INFO, "mosq-pg: initializing pg_dsn=%s timeout_ms=%d fail_open=%t enforce_bind=%t",
+		safeDSN(pgDSN), timeoutMS, failOpen, enforceBind)
+
+	// 初始化 PG 连接池
 	cfg, err := pgxpool.ParseConfig(pgDSN)
 	if err != nil {
-		mosqLog(C.MOSQ_LOG_ERR, ("mosq-pg: invalid pg_dsn"))
+		mosqLogf(C.MOSQ_LOG_ERR, "mosq-pg: invalid pg_dsn (%s): %v", safeDSN(pgDSN), err)
 		return C.MOSQ_ERR_UNKNOWN
 	}
 	cfg.MaxConns = 16
 	cfg.MinConns = 2
 	cfg.MaxConnIdleTime = 60 * time.Second
 	cfg.HealthCheckPeriod = 30 * time.Second
+
 	pool, err = pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
-		mosqLog(C.MOSQ_LOG_ERR, ("mosq-pg: pg pool init failed"))
+		mosqLogf(C.MOSQ_LOG_ERR, "mosq-pg: pg pool init failed: %v", err)
 		return C.MOSQ_ERR_UNKNOWN
 	}
 	if err = pool.Ping(context.Background()); err != nil {
-		mosqLog(C.MOSQ_LOG_ERR, ("mosq-pg: pg ping failed"))
+		mosqLogf(C.MOSQ_LOG_ERR, "mosq-pg: pg ping failed: %v", err)
 		return C.MOSQ_ERR_UNKNOWN
 	}
+	mosqLog(C.MOSQ_LOG_INFO, "mosq-pg: connected to PostgreSQL successfully")
 
-	// Register callbacks
+	// 注册回调
 	if rc := C.register_basic_auth(pid); rc != C.MOSQ_ERR_SUCCESS {
 		return rc
 	}
@@ -120,24 +164,27 @@ func mosquitto_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer
 		C.unregister_basic_auth(pid)
 		return rc
 	}
-	mosqLog(C.MOSQ_LOG_INFO, ("mosq-pg: plugin initialized"))
+
+	mosqLog(C.MOSQ_LOG_INFO, "mosq-pg: plugin initialized")
 	return C.MOSQ_ERR_SUCCESS
 }
 
-// --- Cleanup ---
+// --- Cleanup （void** 对应 **C.pvoid）---
 //
-//export mosquitto_plugin_cleanup
-func mosquitto_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_opt, optCount C.int) C.int {
+// --- Cleanup: 头文件是 void *userdata —— 在 Go 里用 unsafe.Pointer 承接 ---
+//
+//export go_mosq_plugin_cleanup
+func go_mosq_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_opt, optCount C.int) C.int {
 	C.unregister_acl_check(pid)
 	C.unregister_basic_auth(pid)
 	if pool != nil {
 		pool.Close()
 	}
-	mosqLog(C.MOSQ_LOG_INFO, ("mosq-pg: plugin cleaned up"))
+	mosqLog(C.MOSQ_LOG_INFO, "mosq-pg: plugin cleaned up")
 	return C.MOSQ_ERR_SUCCESS
 }
 
-// ========== BASIC_AUTH: connection-time decision ==========
+// -------- BASIC_AUTH / ACL_CHECK 回调保持不变 --------
 
 //export basic_auth_cb_c
 func basic_auth_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointer) C.int {
@@ -147,8 +194,9 @@ func basic_auth_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Poi
 
 	allow, err := dbAuth(username, password, clientID)
 	if err != nil {
-		mosqLog(C.MOSQ_LOG_WARNING, ("mosq-pg auth error: " + err.Error()))
+		mosqLog(C.MOSQ_LOG_WARNING, "mosq-pg auth error: "+err.Error())
 		if failOpen {
+			mosqLog(C.MOSQ_LOG_INFO, "mosq-pg: fail_open=true, allowing auth despite error")
 			return C.MOSQ_ERR_SUCCESS
 		}
 		return C.MOSQ_ERR_AUTH
@@ -158,8 +206,6 @@ func basic_auth_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Poi
 	}
 	return C.MOSQ_ERR_AUTH
 }
-
-// ========== ACL_CHECK: per-operation authorization ==========
 
 //export acl_check_cb_c
 func acl_check_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointer) C.int {
@@ -171,8 +217,9 @@ func acl_check_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Poin
 
 	allow, err := dbACL(username, clientID, topic, access)
 	if err != nil {
-		mosqLog(C.MOSQ_LOG_WARNING, ("mosq-pg acl error: " + err.Error()))
+		mosqLog(C.MOSQ_LOG_WARNING, "mosq-pg acl error: "+err.Error())
 		if failOpen {
+			mosqLog(C.MOSQ_LOG_INFO, "mosq-pg: fail_open=true, allowing ACL despite error")
 			return C.MOSQ_ERR_SUCCESS
 		}
 		return C.MOSQ_ERR_ACL_DENIED
@@ -183,13 +230,12 @@ func acl_check_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Poin
 	return C.MOSQ_ERR_ACL_DENIED
 }
 
-// ----------------- PostgreSQL queries -----------------
+// ----------------- PostgreSQL 逻辑（与你现有一致） -----------------
 
 func ctxTimeout() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 }
 
-// Validate username/password (+ optional clientID binding)
 func dbAuth(username, password, clientID string) (bool, error) {
 	if username == "" || password == "" {
 		return false, nil
@@ -200,7 +246,7 @@ func dbAuth(username, password, clientID string) (bool, error) {
 	var hash string
 	var enabled bool
 	err := pool.QueryRow(ctx,
-		"SELECT password_hash, enabled FROM users WHERE username=$1",
+		"SELECT password_hash, enabled FROM iot_devices WHERE username=$1",
 		username).Scan(&hash, &enabled)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -231,7 +277,6 @@ func dbAuth(username, password, clientID string) (bool, error) {
 	return true, nil
 }
 
-// Evaluate ACLs for (username, topic, access)
 func dbACL(username, clientID, topic string, access int) (bool, error) {
 	if username == "" || topic == "" {
 		return false, nil
@@ -240,8 +285,7 @@ func dbACL(username, clientID, topic string, access int) (bool, error) {
 	defer cancel()
 
 	rows, err := pool.Query(ctx,
-		"SELECT pattern, acc FROM acls WHERE username=$1 OR username='*'",
-		username)
+		"SELECT pattern, acc FROM acls WHERE username=$1 OR username='*'", username)
 	if err != nil {
 		return false, err
 	}
@@ -260,34 +304,27 @@ func dbACL(username, clientID, topic string, access int) (bool, error) {
 	return false, nil
 }
 
-// MQTT topic match with +/# and placeholders {username}/{clientid}
 func mqttMatch(pattern, topic, username, clientID string) bool {
 	p := strings.ReplaceAll(pattern, "{username}", username)
 	p = strings.ReplaceAll(p, "{clientid}", clientID)
-
 	ps := strings.Split(p, "/")
 	ts := strings.Split(topic, "/")
-
-	i := 0
-	for i < len(ps) {
+	for i := 0; i < len(ps); i++ {
 		if i >= len(ts) {
-			// only match if remaining is a single trailing #
 			return ps[i] == "#" && i == len(ps)-1
 		}
 		switch ps[i] {
 		case "#":
-			// # must be last, matches rest
 			return i == len(ps)-1
 		case "+":
-			// matches any single level
+			// pass
 		default:
 			if ps[i] != ts[i] {
 				return false
 			}
 		}
-		i++
 	}
-	return i == len(ts)
+	return len(ps) == len(ts)
 }
 
 func main() {}

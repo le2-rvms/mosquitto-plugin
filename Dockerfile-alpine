@@ -1,0 +1,16 @@
+
+FROM golang:alpine AS build
+
+RUN apk add --no-cache build-base pkgconfig mosquitto-dev postgresql-dev
+
+WORKDIR /src
+COPY go.mod .
+RUN go mod download
+COPY . .
+RUN make build bcryptgen
+
+FROM eclipse-mosquitto:2
+
+RUN apk add --no-cache postgresql-libs
+
+COPY --from=build /src/build/mosq_pg_auth.so /mosquitto/plugins/
