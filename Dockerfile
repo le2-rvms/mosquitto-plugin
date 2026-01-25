@@ -119,7 +119,7 @@ RUN set -eux; \
 #       /mosquitto/config /mosquitto/data /mosquitto/log /mosquitto/plugins
 
 # Copy plugin and example config into the image
-COPY --from=build-plugin --chown=mosquitto:mosquitto /src/build/ /mosquitto/plugins/
+COPY --from=build-plugin --chown=mosquitto:mosquitto /src/plugins/ /mosquitto/plugins/
 
 #COPY docker-entrypoint.sh /
 #ENTRYPOINT ["/docker-entrypoint.sh"]
