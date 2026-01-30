@@ -6,7 +6,7 @@
 
 - 触发事件：仅 `MOSQ_EVT_DISCONNECT`（连接事件由认证插件在登录成功时写入）。
 - 写入策略：回调内直接写库，best-effort，失败仅记录日志。
-- 数据模型：事件明细表 `mqtt_client_events` + 最近事件表 `mqtt_client_latest_events`（每设备一行）。
+- 数据模型：事件明细表 `client_events` + 最近事件表 `client_sessions`（每设备一行）。
 - 表名在代码中固定，不提供配置项。
 
 ## 2. 事件语义
@@ -19,7 +19,7 @@
 ### 3.1 事件明细表（追加写入）
 
 ```sql
-CREATE TABLE IF NOT EXISTS mqtt_client_events (
+CREATE TABLE IF NOT EXISTS client_events (
   id          BIGSERIAL PRIMARY KEY,
   ts          TIMESTAMPTZ NOT NULL,
   event_type  TEXT NOT NULL CHECK (event_type IN ('connect', 'disconnect')),
@@ -31,17 +31,17 @@ CREATE TABLE IF NOT EXISTS mqtt_client_events (
   extra       JSONB
 );
 
-CREATE INDEX IF NOT EXISTS mqtt_client_events_client_ts_idx
-  ON mqtt_client_events (client_id, ts DESC);
+CREATE INDEX IF NOT EXISTS client_events_client_ts_idx
+  ON client_events (client_id, ts DESC);
 
-CREATE INDEX IF NOT EXISTS mqtt_client_events_ts_idx
-  ON mqtt_client_events (ts DESC);
+CREATE INDEX IF NOT EXISTS client_events_ts_idx
+  ON client_events (ts DESC);
 ```
 
 ### 3.2 最近事件表（每设备一行）
 
 ```sql
-CREATE TABLE IF NOT EXISTS mqtt_client_latest_events (
+CREATE TABLE IF NOT EXISTS client_sessions (
   client_id           TEXT PRIMARY KEY,
   username            TEXT,
   last_event_ts       TIMESTAMPTZ NOT NULL,
@@ -54,14 +54,14 @@ CREATE TABLE IF NOT EXISTS mqtt_client_latest_events (
   extra               JSONB
 );
 
-CREATE INDEX IF NOT EXISTS mqtt_client_latest_events_ts_idx
-  ON mqtt_client_latest_events (last_event_ts DESC);
+CREATE INDEX IF NOT EXISTS client_sessions_ts_idx
+  ON client_sessions (last_event_ts DESC);
 ```
 
 ## 4. 写入规则
 
-- 每次事件：先 `INSERT` 到 `mqtt_client_events`。
-- 同步 `UPSERT` 到 `mqtt_client_latest_events`：
+- 每次事件：先 `INSERT` 到 `client_events`。
+- 同步 `UPSERT` 到 `client_sessions`：
   - `last_event_*` 总是更新。
   - `connect` 时更新 `last_connect_ts`，并清空 `last_disconnect_ts`。
   - `disconnect` 时更新 `last_disconnect_ts`，并保留 `last_connect_ts`。
@@ -69,6 +69,7 @@ CREATE INDEX IF NOT EXISTS mqtt_client_latest_events_ts_idx
 - `extra` 当前未写入内容，保留用于后续扩展。
 
 写入来源：
+
 - `connect` 由认证插件写入（登录成功）。
 - `disconnect` 由本插件写入。
 

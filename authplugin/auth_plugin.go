@@ -71,19 +71,19 @@ const (
 )
 
 const insertAuthEventSQL = `
-INSERT INTO mqtt_client_auth_events
+INSERT INTO client_auth_events
   (ts, result, reason, client_id, username, peer, protocol)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 const recordConnEventSQL = `
 WITH ins AS (
-  INSERT INTO mqtt_client_events
+  INSERT INTO client_events
     (ts, event_type, client_id, username, peer, protocol, reason_code, extra)
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
   RETURNING 1
 )
-INSERT INTO mqtt_client_sessions
+INSERT INTO client_sessions
   (client_id, username, last_event_ts, last_event_type, last_connect_ts, last_disconnect_ts,
    last_peer, last_protocol, last_reason_code, extra)
 SELECT $3, $4, $1, $2, $9, $10, $5, $6, $7, $8

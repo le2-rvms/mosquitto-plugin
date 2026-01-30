@@ -1,4 +1,4 @@
-name: Build & Push Docker image (GHCR, temp-tags manifest)
+name: Build & Push Docker image
 
 on:
   schedule:

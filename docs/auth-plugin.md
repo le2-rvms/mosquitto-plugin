@@ -1,12 +1,12 @@
 # 认证插件（PostgreSQL）当前实现说明
 
-本文档描述 `auth-plugin` 的当前实现，内容以源码为准（`authplugin/bridge.c`、`authplugin/plugin.go`）。
+本文档描述 `auth-plugin` 的当前实现，内容以源码为准（`authplugin/auth_plugin.c`、`authplugin/auth_plugin.go`）。
 
-当前功能范围（实现层面）：仅处理 CONNECT 认证（BASIC_AUTH），ACL 未启用；认证数据来源 PostgreSQL，不经 HTTP；每次认证结果写入 `mqtt_client_auth_events`，登录成功时写入连接事件表。
+当前功能范围（实现层面）：仅处理 CONNECT 认证（BASIC_AUTH），ACL 未启用；认证数据来源 PostgreSQL，不经 HTTP；每次认证结果写入 `client_auth_events`，登录成功时写入连接事件表。
 
 ## 1. 组件与职责
 
-### 1.1 C 桥接层（`authplugin/bridge.c`）
+### 1.1 C 桥接层（`authplugin/auth_plugin.c`）
 
 - 提供 Mosquitto 要求的三个入口函数：
   - `mosquitto_plugin_version`
@@ -17,12 +17,12 @@
   - `register_event_callback` / `unregister_event_callback`：封装 `mosquitto_callback_register` / `mosquitto_callback_unregister`。
   - `go_mosq_log`：封装 `mosquitto_log_printf`（避免 Go 直接处理 C 变参）。
 
-### 1.2 Go 插件（`authplugin/plugin.go`）
+### 1.2 Go 插件（`authplugin/auth_plugin.go`）
 
 - 实现 BASIC_AUTH 认证逻辑。
 - 提供事件回调：`basic_auth_cb_c` 与 `acl_check_cb_c`（当前 **仅注册** BASIC_AUTH）。
 - 管理 PostgreSQL 连接池（`pgxpool`），并处理连接与查询超时。
-- 写入认证事件表 `mqtt_client_auth_events`。
+- 写入认证事件表 `client_auth_events`。
 
 ### 1.3 CLI 工具（`cmd/bcryptgen`）
 
@@ -91,27 +91,32 @@
 1. `username` 或 `password` 为空：拒绝（`missing_credentials`）。
 2. `ensurePool` 确保连接池可用（必要时延迟创建）。
 3. 查询用户：
+
    ```sql
    SELECT password_hash, salt, enabled
    FROM mqtt_account
    WHERE username = $1
    ```
+
    - 无记录：拒绝（`user_not_found`）
    - `enabled == 0`：拒绝（`user_disabled`）
    - 密码校验：
      - 计算 `sha256(password + salt)`
      - 与 `password_hash` 比对，不一致则拒绝（`invalid_password`）
+
 4. 如 `enforce_bind == true`，额外校验绑定：
+
    ```sql
    SELECT 1
    FROM client_bindings
    WHERE username = $1 AND client_id = $2
    ```
+
    - 无记录：拒绝（`client_not_bound`）
 
 ### 4.3 认证事件记录
 
-认证完成后（允许/拒绝/DB 错误）会写入 `mqtt_client_auth_events`：
+认证完成后（允许/拒绝/DB 错误）会写入 `client_auth_events`：
 
 - `result`：`success` / `fail`
 - `reason`：`ok` / `missing_credentials` / `user_not_found` / `user_disabled` / `invalid_password` / `client_not_bound` / `db_error` / `db_error_fail_open`
@@ -120,8 +125,8 @@
 
 登录成功后，会向连接事件表写入一条 `connect` 事件，并更新最近事件表：
 
-- `mqtt_client_events`：追加 `event_type = 'connect'`
-- `mqtt_client_latest_events`：更新 `last_event_*` 与 `last_connect_ts`，并清空 `last_disconnect_ts`
+- `client_events`：追加 `event_type = 'connect'`
+- `client_sessions`：更新 `last_event_*` 与 `last_connect_ts`，并清空 `last_disconnect_ts`
 
 表结构见 `docs/connection-plugin.md`。
 
@@ -145,6 +150,7 @@
 ### 6.1 mqtt_devices（认证主表）
 
 必须存在字段（字段类型由代码读取方式决定）：
+
 - `device_code`（文本）
 - `password_hash`（文本，`sha256(password + salt)` 的十六进制）
 - `salt`（文本）
@@ -157,12 +163,12 @@
 
 当 `enforce_bind=true` 时，要求存在对应 `(username, client_id)` 记录。
 
-### 6.3 mqtt_client_auth_events（认证事件表）
+### 6.3 client_auth_events（认证事件表）
 
 记录每次认证结果（success/fail）与原因：
 
 ```sql
-CREATE TABLE IF NOT EXISTS mqtt_client_auth_events (
+CREATE TABLE IF NOT EXISTS client_auth_events (
   id        BIGSERIAL PRIMARY KEY,
   ts        TIMESTAMPTZ NOT NULL,
   result    TEXT NOT NULL CHECK (result IN ('success', 'fail')),
@@ -173,19 +179,19 @@ CREATE TABLE IF NOT EXISTS mqtt_client_auth_events (
   protocol  TEXT
 );
 
-CREATE INDEX IF NOT EXISTS mqtt_client_auth_events_client_ts_idx
-  ON mqtt_client_auth_events (client_id, ts DESC);
+CREATE INDEX IF NOT EXISTS client_auth_events_client_ts_idx
+  ON client_auth_events (client_id, ts DESC);
 
-CREATE INDEX IF NOT EXISTS mqtt_client_auth_events_ts_idx
-  ON mqtt_client_auth_events (ts DESC);
+CREATE INDEX IF NOT EXISTS client_auth_events_ts_idx
+  ON client_auth_events (ts DESC);
 ```
 
-### 6.4 mqtt_client_events / mqtt_client_latest_events
+### 6.4 client_events / client_sessions
 
 登录成功会写入连接事件表，因此需要确保以下两张表存在（表结构见 `docs/connection-plugin.md`）：
 
-- `mqtt_client_events`
-- `mqtt_client_latest_events`
+- `client_events`
+- `client_sessions`
 
 ## 7. 关键配置项（运行时）
 
@@ -206,7 +212,7 @@ CREATE INDEX IF NOT EXISTS mqtt_client_auth_events_ts_idx
 
 ## 9. 构建与本地运行（示例流程）
 
-1) 准备数据库：可先运行 `./scripts/init_db.sh` 创建数据库/角色（默认 `PGHOST=127.0.0.1`、`PGPORT=5432`、`PGUSER=postgres`、`PGDATABASE=mqtt`、`MQTT_DB_USER=mqtt_auth`、`MQTT_DB_PASS=StrongPass`）。该脚本会创建 `users/acls`，**不包含**当前实现需要的 `mqtt_devices`，需补充如下表结构：
+1. 准备数据库：可先运行 `./scripts/init_db.sh` 创建数据库/角色（默认 `PGHOST=127.0.0.1`、`PGPORT=5432`、`PGUSER=postgres`、`PGDATABASE=mqtt`、`MQTT_DB_USER=mqtt_auth`、`MQTT_DB_PASS=StrongPass`）。该脚本会创建 `users/acls`，**不包含**当前实现需要的 `mqtt_devices`，需补充如下表结构：
 
 ```sql
 CREATE TABLE IF NOT EXISTS mqtt_devices (
@@ -226,7 +232,7 @@ CREATE TABLE IF NOT EXISTS client_bindings (
 
 脚本会输出 DSN，可用于 `plugin_opt_pg_dsn`。
 
-2) 生成密码 hash（sha256 + salt）：
+2. 生成密码 hash（sha256 + salt）：
 
 ```bash
 make bcryptgen
@@ -244,7 +250,7 @@ ON CONFLICT (device_code) DO UPDATE
       enabled = EXCLUDED.enabled;
 ```
 
-3) 构建插件：
+3. 构建插件：
 
 ```bash
 make build-auth
@@ -252,7 +258,7 @@ make build-auth
 
 构建需要 Mosquitto 开发头文件（Debian/Ubuntu：`sudo apt-get install -y libmosquitto-dev`）。
 
-4) 配置并启动 Mosquitto（示例）：
+4. 配置并启动 Mosquitto（示例）：
 
 ```conf
 allow_anonymous false
@@ -270,7 +276,7 @@ plugin_opt_enforce_bind false
 mosquitto -c /path/to/mosquitto.conf -v
 ```
 
-5) 简单验证（ACL 未启用，仅验证认证流程）：
+5. 简单验证（ACL 未启用，仅验证认证流程）：
 
 ```bash
 mosquitto_sub -h 127.0.0.1 -u alice -P 'alice-password' -t devices/alice/# -v
@@ -288,7 +294,7 @@ plugin /mosquitto/plugins/auth-plugin
 ## 11. 安全与运维建议
 
 - 生产环境建议为 Postgres 启用 TLS（`sslmode=verify-full`）并配置 CA。
-- DB 角色授予 `SELECT`（`mqtt_devices`、`client_bindings`）以及 `INSERT`（`mqtt_client_auth_events`、`mqtt_client_events`、`mqtt_client_latest_events`）。
+- DB 角色授予 `SELECT`（`mqtt_devices`、`client_bindings`）以及 `INSERT`（`client_auth_events`、`client_events`、`client_sessions`）。
 - 保持 `auth_plugin_deny_special_chars true`，除非明确要关闭。
 - 生产建议 `fail_open=false`，避免 DB 故障导致放行。
 
