@@ -19,7 +19,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: le2-tech/mosquitto
+  IMAGE_NAME: ${{ github.repository_owner }}/mosquitto
 
 jobs:
   meta:
