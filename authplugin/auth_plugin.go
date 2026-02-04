@@ -1,13 +1,11 @@
 package main
 
 /*
-#cgo darwin pkg-config: libmosquitto
+#cgo darwin pkg-config: libmosquitto libcjson
 #cgo darwin LDFLAGS: -Wl,-undefined,dynamic_lookup
-#cgo linux  pkg-config: libmosquitto
+#cgo linux  pkg-config: libmosquitto libcjson
 #include <stdlib.h>
 #include <mosquitto.h>
-#include <mosquitto_plugin.h>
-#include <mosquitto_broker.h>
 
 
 typedef void* pvoid;
@@ -78,7 +76,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 
 const recordConnEventSQL = `
 WITH ins AS (
-  INSERT INTO client_events
+  INSERT INTO client_conn_events
     (ts, event_type, client_id, username, peer, protocol, reason_code, extra)
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
   RETURNING 1

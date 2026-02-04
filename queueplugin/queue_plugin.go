@@ -1,14 +1,12 @@
 package main
 
+// 队列插件：把 Mosquitto 的发布事件转发到 RabbitMQ 交换机。
 /*
-#cgo darwin pkg-config: libmosquitto
+#cgo darwin pkg-config: libmosquitto libcjson
 #cgo darwin LDFLAGS: -Wl,-undefined,dynamic_lookup
-#cgo linux  pkg-config: libmosquitto
+#cgo linux  pkg-config: libmosquitto libcjson
 #include <stdlib.h>
-#include <mqtt_protocol.h>
 #include <mosquitto.h>
-#include <mosquitto_plugin.h>
-#include <mosquitto_broker.h>
 
 typedef int (*mosq_event_cb)(int event, void *event_data, void *userdata);
 
@@ -38,6 +36,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+// failMode 控制发布到 RabbitMQ 失败时的处理策略。
 type failMode int
 
 const (
@@ -46,6 +45,7 @@ const (
 	failModeDisconnect
 )
 
+// config 保存从 Mosquitto 配置解析出的运行参数。
 type config struct {
 	backend         string
 	dsn             string
@@ -65,6 +65,7 @@ type config struct {
 	includeRetained bool
 }
 
+// queueMessage 是发送到 RabbitMQ 的 JSON 负载。
 type queueMessage struct {
 	TS             string         `json:"ts"`
 	Topic          string         `json:"topic"`
@@ -78,11 +79,13 @@ type queueMessage struct {
 	UserProperties []userProperty `json:"user_properties,omitempty"`
 }
 
+// userProperty 对应 MQTT v5 的用户属性。
 type userProperty struct {
 	Key   string `json:"k"`
 	Value string `json:"v"`
 }
 
+// amqpPublisher 管理连接/通道并负责重连。
 type amqpPublisher struct {
 	mu   sync.Mutex
 	conn *amqp.Connection
@@ -135,6 +138,7 @@ func (p *amqpPublisher) ensureLocked() error {
 	return nil
 }
 
+// Publish 发送消息，如果连接/通道关闭会重试一次。
 func (p *amqpPublisher) Publish(ctx context.Context, body []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -171,6 +175,7 @@ var (
 	publisher amqpPublisher
 )
 
+// mosqLog 写入 Mosquitto 的日志系统。
 func mosqLog(level C.int, msg string, args ...any) {
 	if len(args) > 0 {
 		msg = fmt.Sprintf(msg, args...)
@@ -180,6 +185,7 @@ func mosqLog(level C.int, msg string, args ...any) {
 	C.go_mosq_log(level, cs)
 }
 
+// debugLog 在 queue_debug=true 时才输出。
 func debugLog(msg string, args ...any) {
 	if !cfg.debug {
 		return
@@ -210,6 +216,7 @@ func safeDSN(dsn string) string {
 	return u.String()
 }
 
+// parseBoolOption 解析常见的布尔配置值。
 func parseBoolOption(v string) (value bool, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "1", "true", "t", "yes", "y", "on":
@@ -221,6 +228,7 @@ func parseBoolOption(v string) (value bool, ok bool) {
 	}
 }
 
+// parseTimeoutMS 从配置中解析毫秒超时。
 func parseTimeoutMS(v string) (time.Duration, bool) {
 	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil || n <= 0 {
@@ -229,6 +237,7 @@ func parseTimeoutMS(v string) (time.Duration, bool) {
 	return time.Duration(n) * time.Millisecond, true
 }
 
+// parseList 拆分逗号分隔的列表。
 func parseList(v string) []string {
 	parts := strings.Split(v, ",")
 	out := make([]string, 0, len(parts))
@@ -242,6 +251,7 @@ func parseList(v string) []string {
 	return out
 }
 
+// parseSet 将列表转为集合，便于快速查找。
 func parseSet(v string) map[string]struct{} {
 	items := parseList(v)
 	if len(items) == 0 {
@@ -254,6 +264,7 @@ func parseSet(v string) map[string]struct{} {
 	return set
 }
 
+// topicMatch 实现 MQTT 通配符（+ 与 #）匹配。
 func topicMatch(pattern, topic string) bool {
 	if pattern == "#" {
 		return true
@@ -277,6 +288,7 @@ func topicMatch(pattern, topic string) bool {
 	return len(pLevels) == len(tLevels)
 }
 
+// matchAny 只要任一模式匹配就返回 true。
 func matchAny(patterns []string, topic string) bool {
 	for _, pattern := range patterns {
 		if topicMatch(pattern, topic) {
@@ -286,6 +298,7 @@ func matchAny(patterns []string, topic string) bool {
 	return false
 }
 
+// setContains 判断集合中是否包含指定值。
 func setContains(set map[string]struct{}, value string) bool {
 	if len(set) == 0 {
 		return false
@@ -294,6 +307,7 @@ func setContains(set map[string]struct{}, value string) bool {
 	return ok
 }
 
+// allowMessage 根据主题/用户/客户端/保留消息的过滤规则判断是否放行。
 func allowMessage(topic, username, clientID string, retain bool) (bool, string) {
 	if !cfg.includeRetained && retain {
 		return false, "retained"
@@ -319,6 +333,7 @@ func allowMessage(topic, username, clientID string, retain bool) (bool, string) 
 	return true, ""
 }
 
+// extractUserProperties 从事件中读取 MQTT v5 用户属性。
 func extractUserProperties(props *C.mosquitto_property) []userProperty {
 	if props == nil {
 		return nil
@@ -340,6 +355,7 @@ func extractUserProperties(props *C.mosquitto_property) []userProperty {
 	return out
 }
 
+// protocolString 将协议版本号转为字符串。
 func protocolString(version int) string {
 	switch version {
 	case 3:
@@ -353,6 +369,7 @@ func protocolString(version int) string {
 	}
 }
 
+// parseFailMode 解析失败处理策略。
 func parseFailMode(v string) (failMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "drop":
@@ -366,6 +383,7 @@ func parseFailMode(v string) (failMode, bool) {
 	}
 }
 
+// failModeString 将失败策略转回配置字符串。
 func failModeString(mode failMode) string {
 	switch mode {
 	case failModeDrop:
@@ -379,6 +397,7 @@ func failModeString(mode failMode) string {
 	}
 }
 
+// failResult 将发布错误映射为 Mosquitto 返回码。
 func failResult(err error) C.int {
 	if err == nil {
 		return C.MOSQ_ERR_SUCCESS
@@ -397,6 +416,7 @@ func failResult(err error) C.int {
 }
 
 //export go_mosq_plugin_version
+// go_mosq_plugin_version 选择最高支持的插件 API 版本。
 func go_mosq_plugin_version(count C.int, versions *C.int) C.int {
 	for _, v := range unsafe.Slice(versions, int(count)) {
 		if v == 5 {
@@ -407,6 +427,7 @@ func go_mosq_plugin_version(count C.int, versions *C.int) C.int {
 }
 
 //export go_mosq_plugin_init
+// go_mosq_plugin_init 解析配置、校验参数并注册回调。
 func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 	opts *C.struct_mosquitto_opt, optCount C.int) (rc C.int) {
 
@@ -535,6 +556,7 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 }
 
 //export go_mosq_plugin_cleanup
+// go_mosq_plugin_cleanup 注销回调并释放 RabbitMQ 资源。
 func go_mosq_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_opt, optCount C.int) C.int {
 	C.unregister_event_callback(pid, C.MOSQ_EVT_MESSAGE, C.mosq_event_cb(C.message_cb_c))
 	publisher.mu.Lock()
@@ -545,6 +567,7 @@ func go_mosq_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_op
 }
 
 //export message_cb_c
+// message_cb_c 在每次发布事件时被 Mosquitto 调用。
 func message_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointer) C.int {
 	ed := (*C.struct_mosquitto_evt_message)(event_data)
 	if ed == nil {

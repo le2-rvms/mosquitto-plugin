@@ -1,6 +1,4 @@
 #include <mosquitto.h>
-#include <mosquitto_plugin.h>
-#include <mosquitto_broker.h>
 
 /*
  * Mosquitto <-> Go bridge for the connection event plugin.

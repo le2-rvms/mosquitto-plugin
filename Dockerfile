@@ -1,8 +1,8 @@
 FROM debian:trixie-slim AS build-main
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    VERSION=2.0.22 \
-    DOWNLOAD_SHA256=2f752589ef7db40260b633fbdb536e9a04b446a315138d64a7ff3c14e2de6b68 \
+    VERSION=2.1.0 \
+    DOWNLOAD_SHA256=ceccf14f43b8ce21312d0dbf247025b8166536e9afba326f8b7c8b1d201fa6d9 \
     GPG_KEYS=A0D6EEA1DCAE49A635A3B2F0779B22DFB3E717B7
 
 ARG APP_ENV=prod
@@ -18,8 +18,9 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
     ca-certificates wget gnupg dirmngr pkg-config \
     build-essential \
-    libcjson-dev libssl-dev uuid-dev \
+    libcjson-dev libssl-dev uuid-dev libedit-dev libmicrohttpd-dev libsqlite3-dev sqlite3 \
     libwebsockets-dev binutils; \
+    test -f /usr/include/sqlite3.h; \
     rm -rf /var/lib/apt/lists/*
 
 # 下载 + 校验 Mosquitto 源码（sha256 + GPG）
@@ -77,14 +78,27 @@ RUN set -eux; \
 # Multi-stage build: build plugin .so then run with mosquitto
 FROM golang:latest AS build-plugin
 
-# 必要开发包：插件头文件在 mosquitto-dev；pkg-config 供 cgo 找编译参数
+ARG APP_ENV=prod
+
+RUN set -eux; \
+    if [ "${APP_ENV:-}" = "dev" ]; then \
+    sed -i "s|http://deb.debian.org|http://mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources; \
+    fi
+
 RUN set -eux; \
     apt-get update ;\
     apt-get install -y --no-install-recommends \
     build-essential pkg-config ca-certificates \
-    libmosquitto-dev mosquitto-dev \
+    libcjson-dev \
     ; \
     rm -rf /var/lib/apt/lists/*
+
+# 使用 build-main 产出的 mosquitto 2.1 headers/libs，避免版本过旧
+COPY --from=build-main /out/usr/include/ /usr/local/include/
+COPY --from=build-main /out/usr/lib/ /usr/local/lib/
+
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
+    LD_LIBRARY_PATH=/usr/local/lib
 
 WORKDIR /src
 COPY go.mod .
@@ -96,13 +110,20 @@ RUN make build-auth build-queue build-conn
 # https://packages.debian.org/search?keywords=mosquitto
 FROM debian:trixie-slim
 
+ARG APP_ENV=prod
+
+RUN set -eux; \
+    if [ "${APP_ENV:-}" = "dev" ]; then \
+    sed -i "s|http://deb.debian.org|http://mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources; \
+    fi
+
 RUN set -eux; \
     apt-get update ;\
     apt-get install -y --no-install-recommends \
     # mosquitto \
     tree \
     ca-certificates tzdata \
-    libcjson1 libssl3 libuuid1 libwebsockets19t64 \
+    libcjson1 libssl3 libuuid1 libwebsockets19t64 libedit2 libmicrohttpd12t64 libsqlite3-0 \
     ; \
     rm -rf /var/lib/apt/lists/*
 

@@ -125,7 +125,7 @@
 
 登录成功后，会向连接事件表写入一条 `connect` 事件，并更新最近事件表：
 
-- `client_events`：追加 `event_type = 'connect'`
+- `client_conn_events`：追加 `event_type = 'connect'`
 - `client_sessions`：更新 `last_event_*` 与 `last_connect_ts`，并清空 `last_disconnect_ts`
 
 表结构见 `docs/connection-plugin.md`。
@@ -186,11 +186,11 @@ CREATE INDEX IF NOT EXISTS client_auth_events_ts_idx
   ON client_auth_events (ts DESC);
 ```
 
-### 6.4 client_events / client_sessions
+### 6.4 client_conn_events / client_sessions
 
 登录成功会写入连接事件表，因此需要确保以下两张表存在（表结构见 `docs/connection-plugin.md`）：
 
-- `client_events`
+- `client_conn_events`
 - `client_sessions`
 
 ## 7. 关键配置项（运行时）
@@ -294,7 +294,7 @@ plugin /mosquitto/plugins/auth-plugin
 ## 11. 安全与运维建议
 
 - 生产环境建议为 Postgres 启用 TLS（`sslmode=verify-full`）并配置 CA。
-- DB 角色授予 `SELECT`（`mqtt_devices`、`client_bindings`）以及 `INSERT`（`client_auth_events`、`client_events`、`client_sessions`）。
+- DB 角色授予 `SELECT`（`mqtt_devices`、`client_bindings`）以及 `INSERT`（`client_auth_events`、`client_conn_events`、`client_sessions`）。
 - 保持 `auth_plugin_deny_special_chars true`，除非明确要关闭。
 - 生产建议 `fail_open=false`，避免 DB 故障导致放行。
 

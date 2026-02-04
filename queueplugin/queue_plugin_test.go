@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// withConfig 在单个测试内临时覆盖全局配置。
 func withConfig(t *testing.T, c config, fn func()) {
 	t.Helper()
 	old := cfg

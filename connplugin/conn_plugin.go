@@ -1,16 +1,15 @@
 package main
 
 /*
-#cgo darwin pkg-config: libmosquitto
+#cgo darwin pkg-config: libmosquitto libcjson
 #cgo darwin LDFLAGS: -Wl,-undefined,dynamic_lookup
-#cgo linux  pkg-config: libmosquitto
+#cgo linux  pkg-config: libmosquitto libcjson
 #include <stdlib.h>
 #include <mosquitto.h>
-#include <mosquitto_plugin.h>
-#include <mosquitto_broker.h>
 
 typedef int (*mosq_event_cb)(int event, void *event_data, void *userdata);
 
+int connect_cb_c(int event, void *event_data, void *userdata);
 int disconnect_cb_c(int event, void *event_data, void *userdata);
 
 int register_event_callback(mosquitto_plugin_id_t *id, int event, mosq_event_cb cb);
@@ -36,7 +35,7 @@ import (
 
 const recordEventSQL = `
 WITH ins AS (
-  INSERT INTO client_events
+  INSERT INTO client_conn_events
     (ts, event_type, client_id, username, peer, protocol, reason_code, extra)
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
   RETURNING 1
@@ -59,6 +58,7 @@ ON CONFLICT (client_id) DO UPDATE SET
 `
 
 const (
+	connEventTypeConnect    = "connect"
 	connEventTypeDisconnect = "disconnect"
 )
 
@@ -111,6 +111,18 @@ func clientInfoFromDisconnect(ed *C.struct_mosquitto_evt_disconnect) (clientInfo
 	info.peer = cstr(C.mosquitto_client_address(ed.client))
 	info.protocol = protocolString(int(C.mosquitto_client_protocol_version(ed.client)))
 	return info, int(ed.reason)
+}
+
+func clientInfoFromConnect(ed *C.struct_mosquitto_evt_connect) clientInfo {
+	info := clientInfo{}
+	if ed == nil || ed.client == nil {
+		return info
+	}
+	info.clientID = cstr(C.mosquitto_client_id(ed.client))
+	info.username = cstr(C.mosquitto_client_username(ed.client))
+	info.peer = cstr(C.mosquitto_client_address(ed.client))
+	info.protocol = protocolString(int(C.mosquitto_client_protocol_version(ed.client)))
+	return info
 }
 
 func safeDSN(dsn string) string {
@@ -294,7 +306,11 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 		mosqLog(C.MOSQ_LOG_WARNING, "conn-plugin: initial pg connection failed: %v (will retry lazily)", err)
 	}
 
+	if rc := C.register_event_callback(pid, C.MOSQ_EVT_CONNECT, C.mosq_event_cb(C.connect_cb_c)); rc != C.MOSQ_ERR_SUCCESS {
+		return rc
+	}
 	if rc := C.register_event_callback(pid, C.MOSQ_EVT_DISCONNECT, C.mosq_event_cb(C.disconnect_cb_c)); rc != C.MOSQ_ERR_SUCCESS {
+		C.unregister_event_callback(pid, C.MOSQ_EVT_CONNECT, C.mosq_event_cb(C.connect_cb_c))
 		return rc
 	}
 
@@ -306,6 +322,7 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 //
 //export go_mosq_plugin_cleanup
 func go_mosq_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_opt, optCount C.int) C.int {
+	C.unregister_event_callback(pid, C.MOSQ_EVT_CONNECT, C.mosq_event_cb(C.connect_cb_c))
 	C.unregister_event_callback(pid, C.MOSQ_EVT_DISCONNECT, C.mosq_event_cb(C.disconnect_cb_c))
 	poolMu.Lock()
 	if pool != nil {
@@ -318,6 +335,21 @@ func go_mosq_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_op
 }
 
 // --- Event callbacks ---
+
+//export connect_cb_c
+func connect_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointer) C.int {
+	ed := (*C.struct_mosquitto_evt_connect)(event_data)
+	if ed == nil {
+		return C.MOSQ_ERR_SUCCESS
+	}
+
+	info := clientInfoFromConnect(ed)
+	if err := recordConnectEvent(info); err != nil {
+		mosqLog(C.MOSQ_LOG_WARNING, "conn-plugin: record connect event failed: %v", err)
+	}
+
+	return C.MOSQ_ERR_SUCCESS
+}
 
 //export disconnect_cb_c
 func disconnect_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointer) C.int {
@@ -361,6 +393,36 @@ func recordDisconnectEvent(info clientInfo, reason int) error {
 
 	debugLog("conn-plugin: recorded event=%s client_id=%q username=%q peer=%q protocol=%q",
 		connEventTypeDisconnect, info.clientID, info.username, info.peer, info.protocol)
+	return nil
+}
+
+func recordConnectEvent(info clientInfo) error {
+	ctx, cancel := ctxTimeout()
+	defer cancel()
+
+	p, err := ensurePool(ctx)
+	if err != nil {
+		return err
+	}
+
+	ts := time.Now().UTC()
+
+	usernameVal := optionalString(info.username)
+	peerVal := optionalString(info.peer)
+	protocolVal := optionalString(info.protocol)
+	var reasonVal any
+	var extraVal any
+
+	connectTS := ts
+	var disconnectTS any
+	_, err = p.Exec(ctx, recordEventSQL, ts, connEventTypeConnect, info.clientID, usernameVal, peerVal, protocolVal, reasonVal, extraVal,
+		connectTS, disconnectTS)
+	if err != nil {
+		return err
+	}
+
+	debugLog("conn-plugin: recorded event=%s client_id=%q username=%q peer=%q protocol=%q",
+		connEventTypeConnect, info.clientID, info.username, info.peer, info.protocol)
 	return nil
 }
 

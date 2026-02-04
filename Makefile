@@ -1,9 +1,5 @@
 #SHELL := /bin/bash
 BINARY_DIR := plugins
-AUTH_SO := $(BINARY_DIR)/auth-plugin
-QUEUE_SO := $(BINARY_DIR)/queue-plugin
-CONN_SO := $(BINARY_DIR)/conn-plugin
-BCRYPT := $(BINARY_DIR)/bcryptgen
 DOCKER_IMAGE := ghcr.io/le2-tech/mosquitto
 
 GOFLAGS :=
@@ -14,43 +10,48 @@ CGO_ENABLED := 1
 mod:
 	go mod tidy
 
-build-auth-dev: mod
+test:
+	go test ./...
+
+mkdir:
 	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=$(CGO_ENABLED) go build -buildmode=c-shared -gcflags "all=-N -l" -ldflags "" -o $(AUTH_SO) ./authplugin
+
+build-auth-dev:
+	CGO_ENABLED=$(CGO_ENABLED) go build -buildmode=c-shared -gcflags "all=-N -l" -ldflags "" -o $(BINARY_DIR)/auth-plugin ./authplugin
 
 build-auth:
-	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=$(CGO_ENABLED) go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o $(AUTH_SO) ./authplugin
+	CGO_ENABLED=$(CGO_ENABLED) go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o $(BINARY_DIR)/auth-plugin ./authplugin
 
 build-queue:
-	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=$(CGO_ENABLED) go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o $(QUEUE_SO) ./queueplugin
+	CGO_ENABLED=$(CGO_ENABLED) go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o $(BINARY_DIR)/queue-plugin ./queueplugin
 
 build-conn:
-	mkdir -p $(BINARY_DIR)
-	CGO_ENABLED=$(CGO_ENABLED) go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o $(CONN_SO) ./connplugin
+	CGO_ENABLED=$(CGO_ENABLED) go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o $(BINARY_DIR)/conn-plugin ./connplugin
 
 bcryptgen:
-	mkdir -p $(BINARY_DIR)
 	go build -o $(BINARY_DIR)/bcryptgen ./cmd/bcryptgen
 
 clean:
 	rm -rf $(BINARY_DIR)
 
 local-run: mod clean build-auth build-queue build-conn
-	PG_DSN=postgres://iot:ZDZrMegCF0i-saVU@127.0.0.1:5433/iot?sslmode=disable QUEUE_DSN=amqp://rabbitmq_user:passwd@127.0.0.1:7772/ mosquitto -c ./mosquitto.conf -v
+	mosquitto --version
+	PG_DSN=postgres://iot:ZDZrMegCF0i-saVU@127.0.0.1:7733/iot?sslmode=disable QUEUE_DSN=amqp://rabbitmq_user:passwd@127.0.0.1:7772/ mosquitto -c ./mosquitto.conf -v
 
 # Build a runnable Mosquitto image with the plugin baked in
 docker-build-dev:
 	docker build . -f Dockerfile --build-arg APP_ENV=dev -t $(DOCKER_IMAGE)
 
 # Quick run; assumes a postgres reachable per mosquitto.conf DSN
-docker-run:
+docker-run-http:
 	docker run --rm -it \
-	  --network host \
+	  -p 1883:1883 -p 9001:9001 -p 9002:9002 \
 	  -w /mosquitto \
-	  -v $(PWD)/mosquitto.conf:/mosquitto/config/mosquitto.conf \
-	  $(DOCKER_IMAGE) mosquitto -c ./config/mosquitto.conf
+	  -v $(PWD)/mosquitto.http.conf:/mosquitto/config/mosquitto.conf \
+	  eclipse-mosquitto:latest mosquitto -c ./config/mosquitto.conf
 
 docker-bash:
 	docker run --rm -it $(DOCKER_IMAGE) bash
+
+api-clients:
+	curl http://localhost:9002/api/clients
