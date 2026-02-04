@@ -1,3 +1,5 @@
+# 参考：https://github.com/eclipse-mosquitto/mosquitto/blob/master/docker/2.1-ubuntu/Dockerfile
+
 FROM debian:trixie-slim AS build-main
 
 ENV DEBIAN_FRONTEND=noninteractive \
