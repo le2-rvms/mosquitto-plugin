@@ -1,6 +1,5 @@
 package main
 
-// 队列插件：把 Mosquitto 的发布事件转发到 RabbitMQ 交换机。
 /*
 #cgo darwin pkg-config: libmosquitto libcjson
 #cgo darwin LDFLAGS: -Wl,-undefined,dynamic_lookup
@@ -24,156 +23,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"runtime/debug"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unsafe"
 
-	amqp "github.com/rabbitmq/amqp091-go"
+	"mosquitto-plugin/internal/pluginutil"
 )
 
-// failMode 控制发布到 RabbitMQ 失败时的处理策略。
-type failMode int
-
-const (
-	failModeDrop failMode = iota
-	failModeBlock
-	failModeDisconnect
-)
-
-// config 保存从 Mosquitto 配置解析出的运行参数。
-type config struct {
-	backend         string
-	dsn             string
-	exchange        string
-	exchangeType    string
-	routingKey      string
-	queueName       string
-	timeout         time.Duration
-	failMode        failMode
-	debug           bool
-	includeTopics   []string
-	excludeTopics   []string
-	includeUsers    map[string]struct{}
-	excludeUsers    map[string]struct{}
-	includeClients  map[string]struct{}
-	excludeClients  map[string]struct{}
-	includeRetained bool
-}
-
-// queueMessage 是发送到 RabbitMQ 的 JSON 负载。
-type queueMessage struct {
-	TS             string         `json:"ts"`
-	Topic          string         `json:"topic"`
-	PayloadB64     string         `json:"payload_b64"`
-	QoS            uint8          `json:"qos"`
-	Retain         bool           `json:"retain"`
-	ClientID       string         `json:"client_id,omitempty"`
-	Username       string         `json:"username,omitempty"`
-	Peer           string         `json:"peer,omitempty"`
-	Protocol       string         `json:"protocol,omitempty"`
-	UserProperties []userProperty `json:"user_properties,omitempty"`
-}
-
-// userProperty 对应 MQTT v5 的用户属性。
-type userProperty struct {
-	Key   string `json:"k"`
-	Value string `json:"v"`
-}
-
-// amqpPublisher 管理连接/通道并负责重连。
-type amqpPublisher struct {
-	mu   sync.Mutex
-	conn *amqp.Connection
-	ch   *amqp.Channel
-}
-
-func (p *amqpPublisher) closeLocked() {
-	if p.ch != nil {
-		_ = p.ch.Close()
-		p.ch = nil
-	}
-	if p.conn != nil {
-		_ = p.conn.Close()
-		p.conn = nil
-	}
-}
-
-func (p *amqpPublisher) ensureLocked() error {
-	if p.conn != nil && p.conn.IsClosed() {
-		p.conn = nil
-		p.ch = nil
-	}
-	if p.ch != nil && p.ch.IsClosed() {
-		p.ch = nil
-	}
-	if p.conn == nil {
-		conn, err := amqp.DialConfig(cfg.dsn, amqp.Config{
-			Dial: amqp.DefaultDial(cfg.timeout),
-		})
-		if err != nil {
-			return err
-		}
-		p.conn = conn
-		if cfg.debug {
-			mosqLog(C.MOSQ_LOG_INFO, "queue-plugin: connected to rabbitmq")
-		}
-	}
-	if p.ch == nil {
-		ch, err := p.conn.Channel()
-		if err != nil {
-			_ = p.conn.Close()
-			p.conn = nil
-			return err
-		}
-		p.ch = ch
-		if cfg.debug {
-			mosqLog(C.MOSQ_LOG_DEBUG, "queue-plugin: channel opened")
-		}
-	}
-	return nil
-}
-
-// Publish 发送消息，如果连接/通道关闭会重试一次。
-func (p *amqpPublisher) Publish(ctx context.Context, body []byte) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if err := p.ensureLocked(); err != nil {
-		return err
-	}
-
-	err := p.ch.PublishWithContext(ctx, cfg.exchange, cfg.routingKey, false, false, amqp.Publishing{
-		ContentType: "application/json",
-		Body:        body,
-	})
-	if err == nil {
-		return nil
-	}
-
-	if errors.Is(err, amqp.ErrClosed) || (p.conn != nil && p.conn.IsClosed()) || (p.ch != nil && p.ch.IsClosed()) {
-		p.closeLocked()
-		if err2 := p.ensureLocked(); err2 != nil {
-			return err
-		}
-		return p.ch.PublishWithContext(ctx, cfg.exchange, cfg.routingKey, false, false, amqp.Publishing{
-			ContentType: "application/json",
-			Body:        body,
-		})
-	}
-
-	return err
-}
-
-var (
-	pid       *C.mosquitto_plugin_id_t
-	cfg       config
-	publisher amqpPublisher
-)
+var pid *C.mosquitto_plugin_id_t
 
 // mosqLog 写入 Mosquitto 的日志系统。
 func mosqLog(level C.int, msg string, args ...any) {
@@ -183,6 +42,11 @@ func mosqLog(level C.int, msg string, args ...any) {
 	cs := C.CString(msg)
 	defer C.free(unsafe.Pointer(cs))
 	C.go_mosq_log(level, cs)
+}
+
+// infoLog 以 info 级别输出日志。
+func infoLog(msg string, args ...any) {
+	mosqLog(C.MOSQ_LOG_INFO, msg, args...)
 }
 
 // debugLog 在 queue_debug=true 时才输出。
@@ -198,139 +62,6 @@ func cstr(s *C.char) string {
 		return ""
 	}
 	return C.GoString(s)
-}
-
-func safeDSN(dsn string) string {
-	if dsn == "" {
-		return ""
-	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return dsn
-	}
-	if u.User != nil {
-		if _, has := u.User.Password(); has {
-			u.User = url.UserPassword(u.User.Username(), "xxxxx")
-		}
-	}
-	return u.String()
-}
-
-// parseBoolOption 解析常见的布尔配置值。
-func parseBoolOption(v string) (value bool, ok bool) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "t", "yes", "y", "on":
-		return true, true
-	case "0", "false", "f", "no", "n", "off":
-		return false, true
-	default:
-		return false, false
-	}
-}
-
-// parseTimeoutMS 从配置中解析毫秒超时。
-func parseTimeoutMS(v string) (time.Duration, bool) {
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n <= 0 {
-		return 0, false
-	}
-	return time.Duration(n) * time.Millisecond, true
-}
-
-// parseList 拆分逗号分隔的列表。
-func parseList(v string) []string {
-	parts := strings.Split(v, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		item := strings.TrimSpace(part)
-		if item == "" {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-// parseSet 将列表转为集合，便于快速查找。
-func parseSet(v string) map[string]struct{} {
-	items := parseList(v)
-	if len(items) == 0 {
-		return nil
-	}
-	set := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		set[item] = struct{}{}
-	}
-	return set
-}
-
-// topicMatch 实现 MQTT 通配符（+ 与 #）匹配。
-func topicMatch(pattern, topic string) bool {
-	if pattern == "#" {
-		return true
-	}
-	pLevels := strings.Split(pattern, "/")
-	tLevels := strings.Split(topic, "/")
-	for i, p := range pLevels {
-		if p == "#" {
-			return i == len(pLevels)-1
-		}
-		if i >= len(tLevels) {
-			return false
-		}
-		if p == "+" {
-			continue
-		}
-		if p != tLevels[i] {
-			return false
-		}
-	}
-	return len(pLevels) == len(tLevels)
-}
-
-// matchAny 只要任一模式匹配就返回 true。
-func matchAny(patterns []string, topic string) bool {
-	for _, pattern := range patterns {
-		if topicMatch(pattern, topic) {
-			return true
-		}
-	}
-	return false
-}
-
-// setContains 判断集合中是否包含指定值。
-func setContains(set map[string]struct{}, value string) bool {
-	if len(set) == 0 {
-		return false
-	}
-	_, ok := set[value]
-	return ok
-}
-
-// allowMessage 根据主题/用户/客户端/保留消息的过滤规则判断是否放行。
-func allowMessage(topic, username, clientID string, retain bool) (bool, string) {
-	if !cfg.includeRetained && retain {
-		return false, "retained"
-	}
-	if len(cfg.excludeTopics) > 0 && matchAny(cfg.excludeTopics, topic) {
-		return false, "exclude_topic"
-	}
-	if len(cfg.includeTopics) > 0 && !matchAny(cfg.includeTopics, topic) {
-		return false, "not_included_topic"
-	}
-	if len(cfg.excludeUsers) > 0 && setContains(cfg.excludeUsers, username) {
-		return false, "exclude_user"
-	}
-	if len(cfg.includeUsers) > 0 && !setContains(cfg.includeUsers, username) {
-		return false, "not_included_user"
-	}
-	if len(cfg.excludeClients) > 0 && setContains(cfg.excludeClients, clientID) {
-		return false, "exclude_client"
-	}
-	if len(cfg.includeClients) > 0 && !setContains(cfg.includeClients, clientID) {
-		return false, "not_included_client"
-	}
-	return true, ""
 }
 
 // extractUserProperties 从事件中读取 MQTT v5 用户属性。
@@ -353,48 +84,6 @@ func extractUserProperties(props *C.mosquitto_property) []userProperty {
 	}
 
 	return out
-}
-
-// protocolString 将协议版本号转为字符串。
-func protocolString(version int) string {
-	switch version {
-	case 3:
-		return "MQTT/3.1"
-	case 4:
-		return "MQTT/3.1.1"
-	case 5:
-		return "MQTT/5.0"
-	default:
-		return ""
-	}
-}
-
-// parseFailMode 解析失败处理策略。
-func parseFailMode(v string) (failMode, bool) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "drop":
-		return failModeDrop, true
-	case "block":
-		return failModeBlock, true
-	case "disconnect":
-		return failModeDisconnect, true
-	default:
-		return failModeDrop, false
-	}
-}
-
-// failModeString 将失败策略转回配置字符串。
-func failModeString(mode failMode) string {
-	switch mode {
-	case failModeDrop:
-		return "drop"
-	case failModeBlock:
-		return "block"
-	case failModeDisconnect:
-		return "disconnect"
-	default:
-		return "drop"
-	}
 }
 
 // failResult 将发布错误映射为 Mosquitto 返回码。
@@ -475,7 +164,7 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 		case "queue_queue":
 			cfg.queueName = v
 		case "queue_timeout_ms":
-			if dur, ok := parseTimeoutMS(v); ok {
+			if dur, ok := pluginutil.ParseTimeoutMS(v); ok {
 				cfg.timeout = dur
 			} else {
 				mosqLog(C.MOSQ_LOG_WARNING, "queue-plugin: invalid queue_timeout_ms=%q, keeping %dms", v, int(cfg.timeout/time.Millisecond))
@@ -487,7 +176,7 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 				mosqLog(C.MOSQ_LOG_WARNING, "queue-plugin: invalid queue_fail_mode=%q, keeping %s", v, failModeString(cfg.failMode))
 			}
 		case "queue_debug":
-			if parsed, ok := parseBoolOption(v); ok {
+			if parsed, ok := pluginutil.ParseBoolOption(v); ok {
 				cfg.debug = parsed
 			} else {
 				mosqLog(C.MOSQ_LOG_WARNING, "queue-plugin: invalid queue_debug=%q, keeping %t", v, cfg.debug)
@@ -510,7 +199,7 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 		case "exclude_clients":
 			cfg.excludeClients = parseSet(v)
 		case "include_retained":
-			if parsed, ok := parseBoolOption(v); ok {
+			if parsed, ok := pluginutil.ParseBoolOption(v); ok {
 				cfg.includeRetained = parsed
 			} else {
 				mosqLog(C.MOSQ_LOG_WARNING, "queue-plugin: invalid include_retained=%q, keeping %t", v, cfg.includeRetained)
@@ -537,7 +226,7 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 
 	mosqLog(C.MOSQ_LOG_INFO,
 		"queue-plugin: init backend=%s dsn=%s exchange=%s exchange_type=%s routing_key=%s queue=%s timeout_ms=%d fail_mode=%s",
-		cfg.backend, safeDSN(cfg.dsn), cfg.exchange, cfg.exchangeType, cfg.routingKey, cfg.queueName, int(cfg.timeout/time.Millisecond), failModeString(cfg.failMode),
+		cfg.backend, pluginutil.SafeDSN(cfg.dsn), cfg.exchange, cfg.exchangeType, cfg.routingKey, cfg.queueName, int(cfg.timeout/time.Millisecond), failModeString(cfg.failMode),
 	)
 
 	publisher.mu.Lock()
@@ -583,7 +272,7 @@ func message_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointe
 		clientID = cstr(C.mosquitto_client_id(ed.client))
 		username = cstr(C.mosquitto_client_username(ed.client))
 		peer = cstr(C.mosquitto_client_address(ed.client))
-		protocol = protocolString(int(C.mosquitto_client_protocol_version(ed.client)))
+		protocol = pluginutil.ProtocolString(int(C.mosquitto_client_protocol_version(ed.client)))
 	}
 
 	allow, reason := allowMessage(topic, username, clientID, bool(ed.retain))

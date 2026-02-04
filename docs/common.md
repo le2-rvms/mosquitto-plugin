@@ -29,6 +29,7 @@
 ├── connplugin/            # 连接事件插件
 ├── queueplugin/           # 消息队列插件
 ├── cmd/bcryptgen/          # 密码 hash 工具
+├── internal/pluginutil/    # 通用工具函数
 ├── docs/                  # 文档
 ├── plugins/               # 构建产物
 ├── mosquitto.conf          # 示例配置
@@ -53,7 +54,7 @@ plugin_opt_conn_pg_dsn postgres://user:pass@127.0.0.1:5432/mqtt?sslmode=disable
 
 ## 5. Docker
 
-`Dockerfile` 会编译 Mosquitto 2.0.22 与插件，并把 `plugins/` 拷贝到 `/mosquitto/plugins/`。
+`Dockerfile` 会编译 Mosquitto 2.1.0 与插件，并把 `plugins/` 拷贝到 `/mosquitto/plugins/`。
 
 ```conf
 plugin /mosquitto/plugins/auth-plugin

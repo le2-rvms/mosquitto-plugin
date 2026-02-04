@@ -43,7 +43,6 @@ Mosquitto (MOSQ_EVT_MESSAGE)
   "payload_b64": "aGVsbG8=",
   "qos": 1,
   "retain": false,
-  "dup": false,
   "client_id": "client-1",
   "username": "alice",
   "peer": "192.168.1.10:52344",
@@ -116,13 +115,13 @@ Mosquitto (MOSQ_EVT_MESSAGE)
 
 ```conf
 # 认证插件
-plugin /absolute/path/to/build/auth-plugin
+plugin /absolute/path/to/plugins/auth-plugin
 plugin_opt_pg_dsn postgres://user:pass@127.0.0.1:5432/mqtt?sslmode=disable
 plugin_opt_timeout_ms 1500
 plugin_opt_fail_open false
 
 # 消息队列插件
-plugin /absolute/path/to/build/queue-plugin
+plugin /absolute/path/to/plugins/queue-plugin
 plugin_opt_queue_backend rabbitmq
 plugin_opt_queue_dsn amqp://user:pass@127.0.0.1:5672/vhost
 plugin_opt_queue_exchange mqtt_exchange
@@ -148,20 +147,24 @@ plugin_opt_payload_encoding base64
 - 不记录明文 payload（除非显式开启 debug）。
 - 可通过过滤规则限制敏感数据流出。
 
-## 10. 文件结构与构建规划（草案）
+## 10. 文件结构（当前实现）
 
 ```
 .
 ├── queueplugin/
 │   ├── queue_bridge.c        # C 侧入口与包装函数
-│   └── queue_plugin.go       # Go 插件实现
+│   ├── queue_cgo.go          # Go 导出函数/回调与 C 交互
+│   ├── queue_config.go       # 配置解析
+│   ├── queue_filters.go      # 过滤规则
+│   ├── queue_publisher.go    # RabbitMQ 发布器
+│   └── queue_types.go        # 类型与全局配置
 ```
 
 构建目标示例：
 
 ```
 make build-queue
-# 产物：build/queue-plugin 与 build/queue-plugin.h
+# 产物：plugins/queue-plugin 与 plugins/queue-plugin.h
 ```
 
 ## 11. 测试计划（建议）

@@ -1,0 +1,218 @@
+package main
+
+/*
+#cgo darwin pkg-config: libmosquitto libcjson
+#cgo darwin LDFLAGS: -Wl,-undefined,dynamic_lookup
+#cgo linux  pkg-config: libmosquitto libcjson
+#include <stdlib.h>
+#include <mosquitto.h>
+
+typedef void* pvoid;
+
+typedef int (*mosq_event_cb)(int event, void *event_data, void *userdata);
+
+int basic_auth_cb_c(int event, void *event_data, void *userdata);
+int acl_check_cb_c(int event, void *event_data, void *userdata);
+
+int register_event_callback(mosquitto_plugin_id_t *id, int event, mosq_event_cb cb);
+int unregister_event_callback(mosquitto_plugin_id_t *id, int event, mosq_event_cb cb);
+void go_mosq_log(int level, const char* msg);
+*/
+import "C"
+
+import (
+	"fmt"
+	"os"
+	"runtime/debug"
+	"time"
+	"unsafe"
+
+	"mosquitto-plugin/internal/pluginutil"
+)
+
+var pid *C.mosquitto_plugin_id_t
+
+// mosqLog 写入 Mosquitto 的日志系统。
+func mosqLog(level C.int, msg string, args ...any) {
+	if len(args) > 0 {
+		msg = fmt.Sprintf(msg, args...)
+	}
+	cs := C.CString(msg)
+	defer C.free(unsafe.Pointer(cs))
+	C.go_mosq_log(level, cs)
+}
+
+// infoLog 以 info 级别输出日志。
+func infoLog(msg string, args ...any) {
+	mosqLog(C.MOSQ_LOG_INFO, msg, args...)
+}
+
+func cstr(s *C.char) string {
+	if s == nil {
+		return ""
+	}
+	return C.GoString(s)
+}
+
+// clientInfoFromBasicAuth 提取 BASIC_AUTH 事件中的客户端信息。
+func clientInfoFromBasicAuth(ed *C.struct_mosquitto_evt_basic_auth) clientInfo {
+	info := clientInfo{
+		username: cstr(ed.username),
+	}
+	if ed.client == nil {
+		return info
+	}
+	info.clientID = cstr(C.mosquitto_client_id(ed.client))
+	if info.username == "" {
+		info.username = cstr(C.mosquitto_client_username(ed.client))
+	}
+	info.peer = cstr(C.mosquitto_client_address(ed.client))
+	info.protocol = pluginutil.ProtocolString(int(C.mosquitto_client_protocol_version(ed.client)))
+	return info
+}
+
+//export go_mosq_plugin_version
+// go_mosq_plugin_version 选择最高支持的插件 API 版本。
+func go_mosq_plugin_version(count C.int, versions *C.int) C.int {
+	for _, v := range unsafe.Slice(versions, int(count)) {
+		if v == 5 {
+			return 5
+		}
+	}
+	return -1
+}
+
+//export go_mosq_plugin_init
+// go_mosq_plugin_init 解析配置、校验参数并注册回调。
+func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
+	opts *C.struct_mosquitto_opt, optCount C.int) (rc C.int) {
+
+	defer func() {
+		if r := recover(); r != nil {
+			mosqLog(C.MOSQ_LOG_ERR, "auth-plugin: panic in plugin_init: %v\n%s", r, string(debug.Stack()))
+			rc = C.MOSQ_ERR_UNKNOWN
+		}
+	}()
+
+	pid = id
+
+	// 先从环境变量读默认值
+	if env := os.Getenv("PG_DSN"); env != "" {
+		pgDSN = env
+	}
+
+	// 读取 plugin_opt_*
+	for _, o := range unsafe.Slice(opts, int(optCount)) {
+		k, v := cstr(o.key), cstr(o.value)
+		switch k {
+		case "pg_dsn":
+			pgDSN = v
+		case "timeout_ms":
+			if dur, ok := pluginutil.ParseTimeoutMS(v); ok {
+				timeout = dur
+			} else {
+				mosqLog(C.MOSQ_LOG_WARNING, "auth-plugin: invalid timeout_ms=%q, keeping existing value %dms",
+					v, int(timeout/time.Millisecond))
+			}
+		case "fail_open":
+			if parsed, ok := pluginutil.ParseBoolOption(v); ok {
+				failOpen = parsed
+			} else {
+				mosqLog(C.MOSQ_LOG_WARNING, "auth-plugin: invalid fail_open=%q, keeping existing value %t",
+					v, failOpen)
+			}
+		case "enforce_bind":
+			if parsed, ok := pluginutil.ParseBoolOption(v); ok {
+				enforceBind = parsed
+			} else {
+				mosqLog(C.MOSQ_LOG_WARNING, "auth-plugin: invalid enforce_bind=%q, keeping existing value %t",
+					v, enforceBind)
+			}
+		}
+	}
+	if pgDSN == "" {
+		mosqLog(C.MOSQ_LOG_ERR, "auth-plugin: pg_dsn must be set")
+		return C.MOSQ_ERR_UNKNOWN
+	}
+
+	mosqLog(C.MOSQ_LOG_INFO, "auth-plugin: initializing pg_dsn=%s timeout_ms=%d fail_open=%t enforce_bind=%t",
+		pluginutil.SafeDSN(pgDSN), int(timeout/time.Millisecond), failOpen, enforceBind)
+
+	// 验证 PG 配置；数据库暂不可用时不阻塞插件加载
+	if _, err := poolConfig(); err != nil {
+		mosqLog(C.MOSQ_LOG_ERR, "auth-plugin: invalid pg_dsn (%s): %v", pluginutil.SafeDSN(pgDSN), err)
+		return C.MOSQ_ERR_UNKNOWN
+	}
+	ctx, cancel := ctxTimeout()
+	defer cancel()
+	if _, err := ensurePool(ctx); err != nil {
+		mosqLog(C.MOSQ_LOG_WARNING, "auth-plugin: initial pg connection failed: %v (will retry lazily)", err)
+	}
+
+	// 注册回调
+	if rc := C.register_event_callback(pid, C.MOSQ_EVT_BASIC_AUTH, C.mosq_event_cb(C.basic_auth_cb_c)); rc != C.MOSQ_ERR_SUCCESS {
+		return rc
+	}
+
+	mosqLog(C.MOSQ_LOG_INFO, "auth-plugin: plugin initialized")
+	return C.MOSQ_ERR_SUCCESS
+}
+
+//export go_mosq_plugin_cleanup
+// go_mosq_plugin_cleanup 注销回调并释放连接池。
+func go_mosq_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_opt, optCount C.int) C.int {
+	C.unregister_event_callback(pid, C.MOSQ_EVT_BASIC_AUTH, C.mosq_event_cb(C.basic_auth_cb_c))
+	poolMu.Lock()
+	if pool != nil {
+		pool.Close()
+		pool = nil
+	}
+	poolMu.Unlock()
+	mosqLog(C.MOSQ_LOG_INFO, "auth-plugin: plugin cleaned up")
+	return C.MOSQ_ERR_SUCCESS
+}
+
+//export basic_auth_cb_c
+// basic_auth_cb_c 执行认证逻辑并返回结果。
+func basic_auth_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointer) C.int {
+	ed := (*C.struct_mosquitto_evt_basic_auth)(event_data)
+	password := cstr(ed.password)
+	info := clientInfoFromBasicAuth(ed)
+
+	allow, reason, err := dbAuth(info.username, password, info.clientID)
+	result := authResultFail
+	finalReason := reason
+	if err != nil {
+		mosqLog(C.MOSQ_LOG_WARNING, "auth-plugin auth error: "+err.Error())
+		if failOpen {
+			mosqLog(C.MOSQ_LOG_INFO, "auth-plugin: fail_open=true, allowing auth despite error")
+			allow = true
+			result = authResultSuccess
+			finalReason = authReasonDBErrorFailOpen
+		} else {
+			finalReason = authReasonDBError
+		}
+	} else if allow {
+		result = authResultSuccess
+	}
+	if err := recordAuthEvent(info, result, finalReason); err != nil {
+		mosqLog(C.MOSQ_LOG_WARNING, "auth-plugin auth event log failed: %v", err)
+	}
+	if allow {
+		if err := recordConnectEvent(info); err != nil {
+			mosqLog(C.MOSQ_LOG_WARNING, "auth-plugin connect event log failed: %v", err)
+		}
+		return C.MOSQ_ERR_SUCCESS
+	}
+	return C.MOSQ_ERR_AUTH
+}
+
+//export acl_check_cb_c
+// acl_check_cb_c 保持默认：交给后续插件/内置 ACL 处理。
+func acl_check_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointer) C.int {
+	return C.MOSQ_ERR_PLUGIN_DEFER
+}
+
+func main() {
+	println("hit! pid:", os.Getpid())
+}

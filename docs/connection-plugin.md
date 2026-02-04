@@ -1,18 +1,19 @@
 # 连接事件记录插件（PostgreSQL 设计说明）
 
-本文档描述连接事件记录方案：成功登录记录连接事件，断开事件由独立插件写入。
+本文档描述连接事件记录方案：连接与断开事件由连接插件写入；若同时启用认证插件，登录成功时也会写入一次连接事件。
 
 ## 1. 概述
 
-- 触发事件：仅 `MOSQ_EVT_DISCONNECT`（连接事件由认证插件在登录成功时写入）。
+- 触发事件：`MOSQ_EVT_CONNECT` 与 `MOSQ_EVT_DISCONNECT`。
 - 写入策略：回调内直接写库，best-effort，失败仅记录日志。
 - 数据模型：事件明细表 `client_conn_events` + 最近事件表 `client_sessions`（每设备一行）。
 - 表名在代码中固定，不提供配置项。
 
 ## 2. 事件语义
 
-- `connect` 记录于认证插件**登录成功**后，表示有效连接。
+- `connect` 记录于客户端连接事件回调。
 - `disconnect` 记录于 `DISCONNECT` 阶段，表示连接结束。
+- 注意：若同时启用 `auth-plugin`，其登录成功时也会写入 `connect` 事件，可能产生重复记录。
 
 ## 3. 数据库表设计（固定表名）
 
@@ -70,8 +71,8 @@ CREATE INDEX IF NOT EXISTS client_sessions_ts_idx
 
 写入来源：
 
-- `connect` 由认证插件写入（登录成功）。
-- `disconnect` 由本插件写入。
+- `connect`：本插件写入；`auth-plugin` 在认证成功时也会写入（可能重复）。
+- `disconnect`：本插件写入。
 
 ## 5. 字段来源（建议映射）
 
@@ -119,6 +120,6 @@ make build-conn
 
 ## 10. 测试建议
 
-- 单元测试：配置解析、DSN 脱敏、字段转换。
+- 当前无连接插件的单元测试（工具函数已迁移至 `internal/pluginutil` 测试）。
 - 集成测试：本地 Postgres 插入与 UPSERT 校验。
 - 压力测试：大量短连接下的写入延迟与丢弃率。

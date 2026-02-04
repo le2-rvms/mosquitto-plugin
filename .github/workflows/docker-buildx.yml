@@ -4,11 +4,10 @@ on:
   schedule:
     - cron: "0 0 * * 2,5"
   push:
-    branches: [ "main" ]
-    tags: [ "v*" ]
+    branches: ["main"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
-
 
 permissions:
   contents: read
@@ -20,7 +19,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: mosquitto
 
 jobs:
   meta:
@@ -85,7 +84,7 @@ jobs:
           provenance: true
 
   manifest:
-    needs: [ meta, build ]
+    needs: [meta, build]
     runs-on: ubuntu-24.04
     if: github.event_name != 'pull_request'
     steps:

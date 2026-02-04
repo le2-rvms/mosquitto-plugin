@@ -40,19 +40,19 @@ flowchart TB
 ```mermaid
 flowchart LR
   subgraph AuthPlugin[authplugin]
-    A1["MOSQ_EVT_BASIC_AUTH"] --> A2["auth_plugin.go: basic_auth_cb_c"]
+    A1["MOSQ_EVT_BASIC_AUTH"] --> A2["auth_cgo.go: basic_auth_cb_c"]
     A2 --> A3["鉴权 / 记录 auth 事件"]
   end
 
   subgraph ConnPlugin[connplugin]
-    C1["MOSQ_EVT_CONNECT"] --> C2["conn_plugin.go: connect_cb_c"]
+    C1["MOSQ_EVT_CONNECT"] --> C2["conn_cgo.go: connect_cb_c"]
     C2 --> C3["记录 connect 事件"]
-    D1["MOSQ_EVT_DISCONNECT"] --> D2["conn_plugin.go: disconnect_cb_c"]
+    D1["MOSQ_EVT_DISCONNECT"] --> D2["conn_cgo.go: disconnect_cb_c"]
     D2 --> D3["记录 disconnect 事件"]
   end
 
   subgraph QueuePlugin[queueplugin]
-    Q1["MOSQ_EVT_MESSAGE"] --> Q2["queue_plugin.go: message_cb_c"]
+    Q1["MOSQ_EVT_MESSAGE"] --> Q2["queue_cgo.go: message_cb_c"]
     Q2 --> Q3["转发到 RabbitMQ / 编码处理"]
   end
 ```

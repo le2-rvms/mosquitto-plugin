@@ -1,6 +1,6 @@
 # 认证插件（PostgreSQL）当前实现说明
 
-本文档描述 `auth-plugin` 的当前实现，内容以源码为准（`authplugin/auth_plugin.c`、`authplugin/auth_plugin.go`）。
+本文档描述 `auth-plugin` 的当前实现，内容以源码为准（`authplugin/auth_plugin.c`、`authplugin/auth_cgo.go`、`authplugin/auth_db.go`、`authplugin/auth_types.go`、`authplugin/auth_logic.go`）。
 
 当前功能范围（实现层面）：仅处理 CONNECT 认证（BASIC_AUTH），ACL 未启用；认证数据来源 PostgreSQL，不经 HTTP；每次认证结果写入 `client_auth_events`，登录成功时写入连接事件表。
 
@@ -17,12 +17,12 @@
   - `register_event_callback` / `unregister_event_callback`：封装 `mosquitto_callback_register` / `mosquitto_callback_unregister`。
   - `go_mosq_log`：封装 `mosquitto_log_printf`（避免 Go 直接处理 C 变参）。
 
-### 1.2 Go 插件（`authplugin/auth_plugin.go`）
+### 1.2 Go 插件（按职责拆分）
 
-- 实现 BASIC_AUTH 认证逻辑。
-- 提供事件回调：`basic_auth_cb_c` 与 `acl_check_cb_c`（当前 **仅注册** BASIC_AUTH）。
-- 管理 PostgreSQL 连接池（`pgxpool`），并处理连接与查询超时。
-- 写入认证事件表 `client_auth_events`。
+- `authplugin/auth_cgo.go`：Go 导出函数、回调注册、BASIC_AUTH 回调、日志封装。
+- `authplugin/auth_db.go`：连接池管理与数据库读写。
+- `authplugin/auth_types.go`：常量、SQL、结构体与全局配置。
+- `authplugin/auth_logic.go`：密码哈希逻辑（sha256 + salt）。
 
 ### 1.3 CLI 工具（`cmd/bcryptgen`）
 
@@ -79,12 +79,7 @@
 
 ### 4.1 回调入口
 
-- `basic_auth_cb_c` 读取：
-  - `username`（作为 `mqtt_devices.device_code` 使用）
-  - `password`
-  - `client_id`（通过 `mosquitto_client_id`）
-  - `peer` / `protocol`（通过 `mosquitto_client_*`）
-- 调用 `dbAuth(username, password, clientID)`。
+- `basic_auth_cb_c` 读取 `username`（作为 `mqtt_accounts.user_name` 使用）、`password`、`client_id`（通过 `mosquitto_client_id`）、`peer` / `protocol`（通过 `mosquitto_client_*`），并调用 `dbAuth(username, password, clientID)`。
 
 ### 4.2 认证流程（`dbAuth`）
 
@@ -94,8 +89,8 @@
 
    ```sql
    SELECT password_hash, salt, enabled
-   FROM mqtt_account
-   WHERE username = $1
+   FROM mqtt_accounts
+   WHERE user_name = $1
    ```
 
    - 无记录：拒绝（`user_not_found`）
@@ -147,18 +142,18 @@
 
 > 注意：仓库中的 `scripts/init_db.sql` 与此处不一致（详见第 8 节）。
 
-### 6.1 mqtt_devices（认证主表）
+### 6.1 mqtt_accounts（认证主表）
 
 必须存在字段（字段类型由代码读取方式决定）：
 
-- `device_code`（文本）
+- `user_name`（文本）
 - `password_hash`（文本，`sha256(password + salt)` 的十六进制）
 - `salt`（文本）
 - `enabled`（会被扫描为 `int16`，需支持 0/1）
 
 ### 6.2 client_bindings（可选绑定表）
 
-- `username`（存放 device_code）
+- `username`（存放 user_name）
 - `client_id`
 
 当 `enforce_bind=true` 时，要求存在对应 `(username, client_id)` 记录。
@@ -207,16 +202,16 @@ CREATE INDEX IF NOT EXISTS client_auth_events_ts_idx
 
 - 历史说明宣称支持 **ACL**，但当前代码未注册 ACL 回调。
 - `scripts/init_db.sql` 使用表 `users` / `acls` / `client_bindings`，
-  但当前代码实际查询 **`mqtt_devices`**（字段 `device_code`）。
+  但当前代码实际查询 **`mqtt_accounts`**（字段 `user_name`）。
 - 历史说明/脚本描述 **bcrypt**，但 `cmd/bcryptgen` 与插件逻辑使用 **sha256(password + salt)**。
 
 ## 9. 构建与本地运行（示例流程）
 
-1. 准备数据库：可先运行 `./scripts/init_db.sh` 创建数据库/角色（默认 `PGHOST=127.0.0.1`、`PGPORT=5432`、`PGUSER=postgres`、`PGDATABASE=mqtt`、`MQTT_DB_USER=mqtt_auth`、`MQTT_DB_PASS=StrongPass`）。该脚本会创建 `users/acls`，**不包含**当前实现需要的 `mqtt_devices`，需补充如下表结构：
+1. 准备数据库：可先运行 `./scripts/init_db.sh` 创建数据库/角色（默认 `PGHOST=127.0.0.1`、`PGPORT=5432`、`PGUSER=postgres`、`PGDATABASE=mqtt`、`MQTT_DB_USER=mqtt_auth`、`MQTT_DB_PASS=StrongPass`）。该脚本会创建 `users/acls`，**不包含**当前实现需要的 `mqtt_accounts`，需补充如下表结构：
 
 ```sql
-CREATE TABLE IF NOT EXISTS mqtt_devices (
-  device_code   TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS mqtt_accounts (
+  user_name     TEXT PRIMARY KEY,
   password_hash TEXT NOT NULL,
   salt          TEXT NOT NULL,
   enabled       SMALLINT NOT NULL DEFAULT 1,
@@ -239,12 +234,12 @@ make bcryptgen
 ./plugins/bcryptgen -salt 'SALT' 'alice-password'
 ```
 
-将输出值写入 `mqtt_devices.password_hash`。示例：
+将输出值写入 `mqtt_accounts.password_hash`。示例：
 
 ```sql
-INSERT INTO mqtt_devices (device_code, password_hash, salt, enabled)
+INSERT INTO mqtt_accounts (user_name, password_hash, salt, enabled)
 VALUES ('alice', '<hash>', 'SALT', 1)
-ON CONFLICT (device_code) DO UPDATE
+ON CONFLICT (user_name) DO UPDATE
   SET password_hash = EXCLUDED.password_hash,
       salt = EXCLUDED.salt,
       enabled = EXCLUDED.enabled;
@@ -294,17 +289,14 @@ plugin /mosquitto/plugins/auth-plugin
 ## 11. 安全与运维建议
 
 - 生产环境建议为 Postgres 启用 TLS（`sslmode=verify-full`）并配置 CA。
-- DB 角色授予 `SELECT`（`mqtt_devices`、`client_bindings`）以及 `INSERT`（`client_auth_events`、`client_conn_events`、`client_sessions`）。
-- 保持 `auth_plugin_deny_special_chars true`，除非明确要关闭。
+- DB 角色授予 `SELECT`（`mqtt_accounts`、`client_bindings`）以及 `INSERT`（`client_auth_events`、`client_conn_events`、`client_sessions`）。
+- 仅使用本文档中的 `plugin_opt_*` 配置项；没有额外的 Mosquitto 私有选项。
 - 生产建议 `fail_open=false`，避免 DB 故障导致放行。
 
 ## 12. 现有测试
 
-- `authplugin/plugin_test.go` 覆盖的仅是工具函数：
-  - `parseBoolOption`
-  - `parseTimeoutMS`
-  - `safeDSN`
+- `authplugin/auth_plugin_test.go` 覆盖：
   - `sha256PwdSalt`
-  - `envBool`
   - `ctxTimeout`
+- 工具函数测试迁移到 `internal/pluginutil/strings_test.go`。
 - 目前无数据库/插件回调的集成测试。
