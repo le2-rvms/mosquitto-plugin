@@ -33,7 +33,7 @@ type config struct {
 
 // queueMessage 是发送到 RabbitMQ 的 JSON 负载。
 type queueMessage struct {
-	QueueTS        string         `json:"queue_ts"`
+	TS             string         `json:"ts"`
 	Topic          string         `json:"topic"`
 	PayloadB64     string         `json:"payload_b64"`
 	QoS            uint8          `json:"qos"`
