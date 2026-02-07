@@ -15,11 +15,7 @@ func TestSha256PwdSalt(t *testing.T) {
 }
 
 func TestCtxTimeout(t *testing.T) {
-	oldTimeout := timeout
-	t.Cleanup(func() { timeout = oldTimeout })
-
-	timeout = 100 * time.Millisecond
-	ctx, cancel := ctxTimeout()
+	ctx, cancel := timeoutContext(100 * time.Millisecond)
 	defer cancel()
 	if deadline, ok := ctx.Deadline(); !ok {
 		t.Fatal("ctxTimeout expected deadline to be set")
@@ -27,8 +23,7 @@ func TestCtxTimeout(t *testing.T) {
 		t.Fatalf("ctxTimeout deadline remaining %v outside expected range", remaining)
 	}
 
-	timeout = 0
-	ctx, cancel = ctxTimeout()
+	ctx, cancel = timeoutContext(0)
 	cancel()
 	if ctx != context.Background() {
 		t.Fatalf("ctxTimeout with timeout<=0 should return Background context")

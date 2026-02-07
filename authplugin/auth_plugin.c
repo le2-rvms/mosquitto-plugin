@@ -35,7 +35,6 @@ int mosquitto_plugin_cleanup(void *userdata, struct mosquitto_opt *options, int 
 
 /* Go 暴露的事件回调 */
 int basic_auth_cb_c(int event, void *event_data, void *userdata);
-int acl_check_cb_c (int event, void *event_data, void *userdata);
 
 typedef int (*mosq_event_cb)(int event, void *event_data, void *userdata);
 

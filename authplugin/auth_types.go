@@ -8,6 +8,8 @@ import (
 )
 
 const (
+	defaultTimeout = 1500 * time.Millisecond
+
 	authResultSuccess = "success"
 	authResultFail    = "fail"
 
@@ -19,6 +21,14 @@ const (
 	authReasonDBError         = "db_error"
 	authReasonDBErrorFailOpen = "db_error_fail_open"
 )
+
+// selectAuthAccountSQL 读取账户密文、盐和启用状态。
+const selectAuthAccountSQL = `
+SELECT password_hash, salt, enabled
+FROM mqtt_accounts
+WHERE user_name=$1
+  AND (clientid=$2 OR clientid IS NULL)
+`
 
 // insertAuthEventSQL 写入认证结果事件。
 const insertAuthEventSQL = `
@@ -36,10 +46,10 @@ type clientInfo struct {
 }
 
 var (
-	// 连接池与配置
-	pool        *pgxpool.Pool
-	poolMu      sync.RWMutex
-	pgDSN       string // postgres://user:pass@host:5432/db?sslmode=verify-full
-	timeout     = time.Duration(1500) * time.Millisecond
-	failOpen    bool
+	pool   *pgxpool.Pool
+	poolMu sync.RWMutex
+
+	pgDSN    string // postgres://user:pass@host:5432/db?sslmode=verify-full
+	timeout  = defaultTimeout
+	failOpen bool
 )

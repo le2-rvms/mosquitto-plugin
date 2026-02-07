@@ -11,17 +11,11 @@ import (
 	"mosquitto-plugin/internal/pluginutil"
 )
 
-// poolConfig 基于 pgDSN 构建连接池配置。
-func poolConfig() (*pgxpool.Config, error) {
-	cfg, err := pgxpool.ParseConfig(pgDSN)
-	if err != nil {
-		return nil, err
+func timeoutContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.Background(), func() {}
 	}
-	cfg.MaxConns = 16
-	cfg.MinConns = 2
-	cfg.MaxConnIdleTime = 60 * time.Second
-	cfg.HealthCheckPeriod = 30 * time.Second
-	return cfg, nil
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 // ensurePool 延迟初始化连接池，必要时创建并复用。
@@ -40,10 +34,14 @@ func ensurePool(ctx context.Context) (*pgxpool.Pool, error) {
 		return pool, nil
 	}
 
-	cfg, err := poolConfig()
+	cfg, err := pgxpool.ParseConfig(pgDSN)
 	if err != nil {
 		return nil, err
 	}
+	cfg.MaxConns = 16
+	cfg.MinConns = 2
+	cfg.MaxConnIdleTime = 60 * time.Second
+	cfg.HealthCheckPeriod = 30 * time.Second
 
 	newPool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -58,20 +56,12 @@ func ensurePool(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// ctxTimeout 根据配置的超时生成 context。
-func ctxTimeout() (context.Context, context.CancelFunc) {
-	if timeout <= 0 {
-		return context.Background(), func() {}
-	}
-	return context.WithTimeout(context.Background(), timeout)
-}
-
 // dbAuth 执行认证逻辑并返回结果/原因。
 func dbAuth(username, password, clientID string) (bool, string, error) {
 	if username == "" || password == "" {
 		return false, authReasonMissingCreds, nil
 	}
-	ctx, cancel := ctxTimeout()
+	ctx, cancel := timeoutContext(timeout)
 	defer cancel()
 
 	p, err := ensurePool(ctx)
@@ -82,9 +72,8 @@ func dbAuth(username, password, clientID string) (bool, string, error) {
 	var hash string
 	var salt string
 	var enabledInt int16
-	err = p.QueryRow(ctx,
-		"SELECT password_hash, salt, enabled FROM mqtt_accounts WHERE user_name=$1 and (clientid=$2 or clientid is null)",
-		username, clientID).Scan(&hash, &salt, &enabledInt)
+	err = p.QueryRow(ctx, selectAuthAccountSQL, username, clientID).
+		Scan(&hash, &salt, &enabledInt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, authReasonUserNotFound, nil
@@ -104,7 +93,7 @@ func dbAuth(username, password, clientID string) (bool, string, error) {
 
 // recordAuthEvent 写入认证事件。
 func recordAuthEvent(info clientInfo, result, reason string) error {
-	ctx, cancel := ctxTimeout()
+	ctx, cancel := timeoutContext(timeout)
 	defer cancel()
 
 	p, err := ensurePool(ctx)
@@ -112,9 +101,14 @@ func recordAuthEvent(info clientInfo, result, reason string) error {
 		return err
 	}
 
-	ts := time.Now().UTC()
-
-	_, err = p.Exec(ctx, insertAuthEventSQL, ts, result, reason,
-		pluginutil.OptionalString(info.clientID), pluginutil.OptionalString(info.username), pluginutil.OptionalString(info.peer), pluginutil.OptionalString(info.protocol))
+	_, err = p.Exec(ctx, insertAuthEventSQL,
+		time.Now().UTC(),
+		result,
+		reason,
+		pluginutil.OptionalString(info.clientID),
+		pluginutil.OptionalString(info.username),
+		pluginutil.OptionalString(info.peer),
+		pluginutil.OptionalString(info.protocol),
+	)
 	return err
 }
