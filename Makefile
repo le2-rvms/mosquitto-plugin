@@ -28,8 +28,8 @@ build-queue:
 build-conn:
 	CGO_ENABLED=$(CGO_ENABLED) go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o $(BINARY_DIR)/conn-plugin ./connplugin
 
-bcryptgen:
-	go build -o $(BINARY_DIR)/bcryptgen ./cmd/bcryptgen
+run-bcryptgen:
+	go run ./cmd/bcryptgen --salt slat_foo123 --password public
 
 clean:
 	rm -rf $(BINARY_DIR)
