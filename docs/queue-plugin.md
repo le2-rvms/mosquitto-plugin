@@ -95,7 +95,6 @@ Mosquitto (MOSQ_EVT_MESSAGE)
 - `plugin_opt_queue_exchange`：Exchange 名称。
 - `plugin_opt_queue_exchange_type`：固定 `direct`。
 - `plugin_opt_queue_routing_key`：Routing key（默认空）。
-- `plugin_opt_queue_queue`：Queue 名称（可选，仅用于与运维约定，不参与绑定）。
 
 发送与失败策略：
 
@@ -119,7 +118,6 @@ plugin_opt_queue_dsn amqp://user:pass@127.0.0.1:5672/vhost
 plugin_opt_queue_exchange mqtt_exchange
 plugin_opt_queue_exchange_type direct
 plugin_opt_queue_routing_key mqtt.messages
-plugin_opt_queue_queue mqtt_queue
 plugin_opt_queue_fail_mode drop
 ```
 

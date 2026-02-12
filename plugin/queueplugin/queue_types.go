@@ -24,7 +24,6 @@ type config struct {
 	exchange       string
 	exchangeType   string
 	routingKey     string
-	queueName      string
 	enqueueTimeout time.Duration
 	publishTimeout time.Duration
 	failMode       failMode

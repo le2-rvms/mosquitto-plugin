@@ -167,7 +167,6 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 	if env := os.Getenv("QUEUE_DSN"); env != "" {
 		cfg.dsn = env
 	}
-
 	for _, o := range unsafe.Slice(opts, int(optCount)) {
 		k, v := cstr(o.key), cstr(o.value)
 		switch k {
@@ -185,9 +184,6 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 			}
 		case "queue_routing_key":
 			cfg.routingKey = v
-		case "queue_queue":
-			// 仅用于与运维约定，不参与绑定/声明。
-			cfg.queueName = v
 		case "queue_timeout_ms":
 			if dur, ok := pluginutil.ParseTimeoutMS(v); ok {
 				// 兼容旧配置：同时设置入队与发送超时。
@@ -236,7 +232,6 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 		"exchange":           cfg.exchange,
 		"exchange_type":      cfg.exchangeType,
 		"routing_key":        cfg.routingKey,
-		"queue":              cfg.queueName,
 		"enqueue_timeout_ms": int(cfg.enqueueTimeout / time.Millisecond),
 		"publish_timeout_ms": int(cfg.publishTimeout / time.Millisecond),
 		"fail_mode":          failModeString(cfg.failMode),

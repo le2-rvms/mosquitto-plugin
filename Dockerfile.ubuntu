@@ -1,4 +1,6 @@
-FROM debian:trixie-slim AS build-main
+# 参考：https://github.com/eclipse-mosquitto/mosquitto/blob/master/docker/2.1-ubuntu/Dockerfile
+
+FROM ubuntu:24.04 AS build-main
 
 ENV VERSION=2.1.2 \
     DOWNLOAD_SHA256=fd905380691ac65ea5a93779e8214941829e3d6e038d5edff9eac5fd74cbed02 \
@@ -8,10 +10,10 @@ ARG APP_ENV=prod
 
 RUN set -eux; \
     if [ "${APP_ENV:-}" = "dev" ]; then \
-    sed -i "s|http://deb.debian.org|http://mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources; \
+    sed -i "s|http://ports.ubuntu.com/ubuntu-ports/|http://mirrors.aliyun.com/ubuntu-ports/|g" /etc/apt/sources.list.d/ubuntu.sources; \
     fi
 
-# 构建依赖（使用 Debian 组件提供的 libwebsockets-dev）
+# 构建依赖（参考官方 2.1-ubuntu，补齐项目构建所需项）
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -20,13 +22,10 @@ RUN set -eux; \
     gnupg \
     libargon2-dev \
     libcjson-dev \
-    # uuid-dev \
     libedit-dev \
     libmicrohttpd-dev \
     libssl-dev \
     libsqlite3-dev \
-    # libwebsockets-dev \
-    # binutils \
     wget \
     ca-certificates \
     ; \
@@ -103,7 +102,7 @@ RUN set -eux; \
     ; \
     rm -rf /var/lib/apt/lists/*
 
-# 使用 build-main 产出的 mosquitto 2.1 headers/libs，避免版本过旧
+# 使用 build-main 产出的 mosquitto headers/libs
 COPY --from=build-main /out/usr/include/ /usr/local/include/
 COPY --from=build-main /out/usr/lib/ /usr/local/lib/
 
@@ -117,14 +116,13 @@ COPY . .
 RUN make build-auth build-queue build-conn
 
 
-# https://packages.debian.org/search?keywords=mosquitto
-FROM debian:trixie-slim
+FROM ubuntu:24.04
 
 ARG APP_ENV=prod
 
 RUN set -eux; \
     if [ "${APP_ENV:-}" = "dev" ]; then \
-    sed -i "s|http://deb.debian.org|http://mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources; \
+    sed -i "s|http://ports.ubuntu.com/ubuntu-ports/|http://mirrors.aliyun.com/ubuntu-ports/|g" /etc/apt/sources.list.d/ubuntu.sources; \
     fi
 
 RUN set -eux; \
@@ -134,15 +132,12 @@ RUN set -eux; \
     tzdata \
     libargon2-1 \
     libcjson1 \
-    # libssl3 \
-    # libuuid1 \
-    # libwebsockets19t64 \
     libedit2 \
-    # libmicrohttpd12t64 \
     libmicrohttpd12 \
     libsqlite3-0 \
     ; \
     rm -rf /var/lib/apt/lists/*
+# libssl3 libuuid1 \
 
 # 运行用户与目录
 # RUN set -eux; \
@@ -153,19 +148,12 @@ RUN set -eux; \
 
 RUN set -eux; \
     groupadd -r -g 1883 mosquitto || true; \
-    useradd  -r -u 1883 -g mosquitto -d /var/empty -s /usr/sbin/nologin -c "mosquitto" mosquitto || true;
+    useradd  -r -u 1883 -g mosquitto -d /var/empty -s /usr/sbin/nologin -c "mosquitto" mosquitto || true; 
 # mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log; \
 # chown -R mosquitto:mosquitto /mosquitto
 
-# https://sources.debian.org/src/mosquitto/2.0.22-3/debian/mosquitto.postinst
-# RUN set -eux; \
-#     install -d -o mosquitto -g mosquitto -m 755 \
-#       /mosquitto/config /mosquitto/data /mosquitto/log /mosquitto/plugins
-
 # Copy plugin into the image
 COPY --from=build-plugin --chown=mosquitto:mosquitto /src/plugins/ /mosquitto/plugins/
-
-# USER mosquitto
 
 # 拷贝构建产物
 COPY --from=build-main /out/ /
@@ -176,4 +164,3 @@ COPY docker-entrypoint.sh /
 EXPOSE 1883
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
-# CMD ["mosquitto"] 

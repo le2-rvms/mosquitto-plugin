@@ -40,8 +40,12 @@ local-run: mod clean mkdir build-auth build-queue build-conn
 	PG_DSN=postgres://iot:ZDZrMegCF0i-saVU@127.0.0.1:7733/iot?sslmode=disable QUEUE_DSN=amqp://rabbitmq_user:passwd@127.0.0.1:7772/ mosquitto -c ./mosquitto.conf -v
 
 # Build a runnable Mosquitto image with the plugin baked in
+# --progress=plain
 docker-build-dev:
-	docker build . -f Dockerfile --build-arg APP_ENV=dev -t $(DOCKER_IMAGE)
+	docker build . -f Dockerfile --build-arg APP_ENV=dev -t $(DOCKER_IMAGE) 
+
+docker-build-dev-ubuntu:
+	docker build . -f Dockerfile.ubuntu --build-arg APP_ENV=dev -t $(DOCKER_IMAGE) 
 
 # Quick run; assumes a postgres reachable per mosquitto.conf DSN
 docker-run-http:
