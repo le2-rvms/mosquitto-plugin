@@ -1,0 +1,16 @@
+# 全局规则（不在 user 块中，对所有用户生效）
+# 设备账户：仅访问自身设备主题（假设 username 与 clientid 同名）
+pattern readwrite v1/d/%c/#
+
+# 运维账户：读写全局，但建议保留 $SYS 只读
+user ${MOSQUITTO_USER_OPS}
+# 系统状态只读
+topic read $SYS/#
+# 运维全权限（按需保留或收紧）
+topic readwrite v1/#
+
+# 管理端账户：允许管理端读写所有业务主题
+user ${MOSQUITTO_USER_APP_WEB}
+topic readwrite v1/#
+
+# 默认兜底：不匹配则拒绝

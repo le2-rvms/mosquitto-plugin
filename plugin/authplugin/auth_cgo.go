@@ -20,6 +20,7 @@ import "C"
 import (
 	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -34,6 +35,7 @@ const (
 	mosqLogInfo    = int(C.MOSQ_LOG_INFO)
 	mosqLogWarning = int(C.MOSQ_LOG_WARNING)
 	mosqLogError   = int(C.MOSQ_LOG_ERR)
+	mosqErrDefer   = int(C.MOSQ_ERR_PLUGIN_DEFER)
 )
 
 var (
@@ -186,6 +188,9 @@ func authResultCode(allow bool) C.int {
 }
 
 func runBasicAuth(info pluginutil.ClientInfo, password string) C.int {
+	if info.Username == "" || strings.HasPrefix(info.Username, "_") {
+		return C.MOSQ_ERR_PLUGIN_DEFER
+	}
 	dbAllow, dbReason, err := dbAuthFn(info.Username, password, info.ClientID)
 	allow, result, reason := dbAllow, authResultFail, dbReason
 	if err != nil {

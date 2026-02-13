@@ -120,6 +120,34 @@ func TestRunBasicAuth(t *testing.T) {
 	}
 }
 
+func TestRunBasicAuthDefer(t *testing.T) {
+	origDBAuth := dbAuthFn
+	origRecord := recordAuthEventFn
+	t.Cleanup(func() {
+		dbAuthFn = origDBAuth
+		recordAuthEventFn = origRecord
+	})
+	dbAuthFn = func(username, password, clientID string) (bool, string, error) {
+		t.Fatal("dbAuth should not be called for defer")
+		return false, "", nil
+	}
+	recordAuthEventFn = func(info pluginutil.ClientInfo, result, reason string) error {
+		t.Fatal("recordAuthEvent should not be called for defer")
+		return nil
+	}
+
+	tests := []pluginutil.ClientInfo{
+		{ClientID: "c1", Username: ""},
+		{ClientID: "c1", Username: "_ops"},
+	}
+	for _, info := range tests {
+		got := runBasicAuth(info, "pwd")
+		if int(got) != mosqErrDefer {
+			t.Fatalf("defer mismatch for %q: got=%d", info.Username, int(got))
+		}
+	}
+}
+
 func TestBasicAuthCbNilEventData(t *testing.T) {
 	origWarnLogger := warnLogger
 	t.Cleanup(func() {

@@ -148,19 +148,19 @@ RUN set -eux; \
 
 RUN set -eux; \
     groupadd -r -g 1883 mosquitto || true; \
-    useradd  -r -u 1883 -g mosquitto -d /var/empty -s /usr/sbin/nologin -c "mosquitto" mosquitto || true; 
+    useradd  -r -u 1883 -g mosquitto -d /var/empty -s /usr/sbin/nologin -c "mosquitto" mosquitto || true;
 # mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log; \
 # chown -R mosquitto:mosquitto /mosquitto
 
 # Copy plugin into the image
-COPY --from=build-plugin --chown=mosquitto:mosquitto /src/plugins/ /mosquitto/plugins/
+COPY --from=build-plugin --chown=mosquitto:mosquitto /src/build/ /mosquitto/plugins/
 
 # 拷贝构建产物
 COPY --from=build-main /out/ /
 
 VOLUME ["/mosquitto/data", "/mosquitto/log"]
 
-COPY docker-entrypoint.sh /
+COPY ./docker/docker-entrypoint.sh /
 EXPOSE 1883
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]

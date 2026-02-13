@@ -215,7 +215,7 @@ make build-auth
 ```conf
 allow_anonymous false
 listener 1883
-plugin /absolute/path/to/plugins/auth-plugin
+plugin /absolute/path/to/build/auth-plugin
 plugin_opt_pg_dsn postgres://user:pass@127.0.0.1:5432/mqtt?sslmode=disable
 plugin_opt_timeout_ms 1500
 plugin_opt_fail_open false
@@ -236,10 +236,10 @@ mosquitto_pub -h 127.0.0.1 -u alice -P 'alice-password' -t devices/alice/up -m h
 
 ## 10. Docker 运行（可选）
 
-`Dockerfile` 会编译 Mosquitto 与插件，并把 `plugins/` 拷贝到 `/mosquitto/plugins/`。容器内配置示例：
+`Dockerfile` 会编译 Mosquitto 与插件，并把 `build/` 拷贝到 `/mosquitto/build/`。容器内配置示例：
 
 ```conf
-plugin /mosquitto/plugins/auth-plugin
+plugin /mosquitto/build/auth-plugin
 ```
 
 ## 11. 安全与运维建议

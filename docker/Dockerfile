@@ -20,13 +20,10 @@ RUN set -eux; \
     gnupg \
     libargon2-dev \
     libcjson-dev \
-    # uuid-dev \
     libedit-dev \
     libmicrohttpd-dev \
     libssl-dev \
     libsqlite3-dev \
-    # libwebsockets-dev \
-    # binutils \
     wget \
     ca-certificates \
     ; \
@@ -103,7 +100,7 @@ RUN set -eux; \
     ; \
     rm -rf /var/lib/apt/lists/*
 
-# 使用 build-main 产出的 mosquitto 2.1 headers/libs，避免版本过旧
+# 使用 build-main 产出的 mosquitto headers/libs
 COPY --from=build-main /out/usr/include/ /usr/local/include/
 COPY --from=build-main /out/usr/lib/ /usr/local/lib/
 
@@ -134,11 +131,7 @@ RUN set -eux; \
     tzdata \
     libargon2-1 \
     libcjson1 \
-    # libssl3 \
-    # libuuid1 \
-    # libwebsockets19t64 \
     libedit2 \
-    # libmicrohttpd12t64 \
     libmicrohttpd12 \
     libsqlite3-0 \
     ; \
@@ -157,13 +150,8 @@ RUN set -eux; \
 # mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log; \
 # chown -R mosquitto:mosquitto /mosquitto
 
-# https://sources.debian.org/src/mosquitto/2.0.22-3/debian/mosquitto.postinst
-# RUN set -eux; \
-#     install -d -o mosquitto -g mosquitto -m 755 \
-#       /mosquitto/config /mosquitto/data /mosquitto/log /mosquitto/plugins
-
 # Copy plugin into the image
-COPY --from=build-plugin --chown=mosquitto:mosquitto /src/plugins/ /mosquitto/plugins/
+COPY --from=build-plugin --chown=mosquitto:mosquitto /src/build/ /mosquitto/plugins/
 
 # USER mosquitto
 
@@ -172,7 +160,7 @@ COPY --from=build-main /out/ /
 
 VOLUME ["/mosquitto/data", "/mosquitto/log"]
 
-COPY docker-entrypoint.sh /
+COPY ./docker/docker-entrypoint.sh /
 EXPOSE 1883
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]

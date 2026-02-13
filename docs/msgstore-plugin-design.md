@@ -68,8 +68,8 @@ msgstoreplugin/
 
 构建产物建议：
 
-- `plugins/msgstore-plugin`
-- `plugins/msgstore-plugin.h`
+- `build/msgstore-plugin`
+- `build/msgstore-plugin.h`
 
 Make 目标建议：
 

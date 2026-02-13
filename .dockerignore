@@ -10,7 +10,9 @@
 *.swo
 
 # Build artifacts
-plugins/
+build/
+docs/
+config/
 *.so
 *.dylib
 *.dll

@@ -13,5 +13,5 @@ FROM eclipse-mosquitto:2
 
 RUN apk add --no-cache postgresql-libs
 
-# COPY --from=build /src/build/mosq_pg_auth.so /mosquitto/plugins/
-COPY --from=build /src/build/ /mosquitto/plugins/
+# COPY --from=build /src/build/mosq_pg_auth.so /mosquitto/build/
+COPY --from=build /src/build/ /mosquitto/build/

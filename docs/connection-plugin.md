@@ -95,7 +95,7 @@ CREATE INDEX IF NOT EXISTS client_sessions_ts_idx
 
 ```conf
 # 连接事件记录插件
-plugin /absolute/path/to/plugins/conn-plugin
+plugin /absolute/path/to/build/conn-plugin
 plugin_opt_conn_pg_dsn postgres://user:pass@127.0.0.1:5432/mqtt?sslmode=disable
 plugin_opt_conn_timeout_ms 1000
 
@@ -112,7 +112,7 @@ plugin_opt_conn_timeout_ms 1000
 make build-conn
 ```
 
-产物：`plugins/conn-plugin` 与 `plugins/conn-plugin.h`。
+产物：`build/conn-plugin` 与 `build/conn-plugin.h`。
 
 ## 10. 测试建议
 

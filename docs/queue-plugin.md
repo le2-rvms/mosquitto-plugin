@@ -3,6 +3,7 @@
 本文档描述新增的 Mosquitto 插件：把 Broker 收到的消息推送到 RabbitMQ，用作实现依据。
 
 说明：
+
 - 本文仅覆盖 `queueplugin`（RabbitMQ）实现。
 - 独立 PostgreSQL 插件方案见 `docs/msgstore-plugin-design.md`（提案）。
 
@@ -112,7 +113,7 @@ Mosquitto (MOSQ_EVT_MESSAGE)
 ```conf
 
 # 消息队列插件
-plugin /absolute/path/to/plugins/queue-plugin
+plugin /absolute/path/to/build/queue-plugin
 plugin_opt_queue_backend rabbitmq
 plugin_opt_queue_dsn amqp://user:pass@127.0.0.1:5672/vhost
 plugin_opt_queue_exchange mqtt_exchange
@@ -154,7 +155,7 @@ plugin_opt_queue_fail_mode drop
 
 ```
 make build-queue
-# 产物：plugins/queue-plugin 与 plugins/queue-plugin.h
+# 产物：build/queue-plugin 与 build/queue-plugin.h
 ```
 
 ## 11. 测试计划（建议）

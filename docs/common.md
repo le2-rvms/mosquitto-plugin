@@ -16,11 +16,12 @@
 - 构建连接事件插件：`make build-conn`
 - 生成工具：`make bcryptgen`
 
-产物默认输出到 `plugins/`：
-- `plugins/auth-plugin` / `plugins/auth-plugin.h`
-- `plugins/queue-plugin` / `plugins/queue-plugin.h`
-- `plugins/conn-plugin` / `plugins/conn-plugin.h`
-- `plugins/bcryptgen`
+产物默认输出到 `build/`：
+
+- `build/auth-plugin` / `build/auth-plugin.h`
+- `build/queue-plugin` / `build/queue-plugin.h`
+- `build/conn-plugin` / `build/conn-plugin.h`
+- `build/bcryptgen`
 
 ## 3. 目录结构（核心）
 
@@ -33,7 +34,7 @@
 ├── cmd/bcryptgen/          # 密码 hash 工具
 ├── internal/pluginutil/    # 通用工具函数
 ├── docs/                  # 文档
-├── plugins/               # 构建产物
+├── build/               # 构建产物
 ├── mosquitto.conf          # 示例配置
 └── Makefile
 ```
@@ -47,19 +48,19 @@
 示例：
 
 ```conf
-plugin /absolute/path/to/plugins/auth-plugin
+plugin /absolute/path/to/build/auth-plugin
 plugin_opt_pg_dsn postgres://user:pass@127.0.0.1:5432/mqtt?sslmode=disable
 
-plugin /absolute/path/to/plugins/conn-plugin
+plugin /absolute/path/to/build/conn-plugin
 plugin_opt_conn_pg_dsn postgres://user:pass@127.0.0.1:5432/mqtt?sslmode=disable
 ```
 
 ## 5. Docker
 
-`Dockerfile` 会编译 Mosquitto 2.1.1 与插件，并把 `plugins/` 拷贝到 `/mosquitto/plugins/`。
+`Dockerfile` 会编译 Mosquitto 2.1.1 与插件，并把 `build/` 拷贝到 `/mosquitto/build/`。
 
 ```conf
-plugin /mosquitto/plugins/auth-plugin
+plugin /mosquitto/build/auth-plugin
 ```
 
 ## 6. 测试

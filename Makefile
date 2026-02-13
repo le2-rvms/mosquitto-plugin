@@ -1,5 +1,10 @@
+ifneq (,$(wildcard .env))
+include .env
+export
+endif
+
 #SHELL := /bin/bash
-BINARY_DIR := plugins
+BINARY_DIR := build
 DOCKER_IMAGE := ghcr.io/le2-tech/mosquitto
 
 GOFLAGS :=
@@ -37,18 +42,18 @@ clean:
 
 local-run: mod clean mkdir build-auth build-queue build-conn
 	mosquitto --version
-	PG_DSN=postgres://iot:ZDZrMegCF0i-saVU@127.0.0.1:7733/iot?sslmode=disable QUEUE_DSN=amqp://rabbitmq_user:passwd@127.0.0.1:7772/ mosquitto -c ./mosquitto.conf -v
+	PG_DSN=${PG_DSN} QUEUE_DSN=${QUEUE_DSN} mosquitto -c ./config/mosquitto.conf
 
 # Build a runnable Mosquitto image with the plugin baked in
 # --progress=plain
 docker-build-dev:
-	docker build . -f Dockerfile --build-arg APP_ENV=dev -t $(DOCKER_IMAGE) 
+	docker build . -f docker/Dockerfile --build-arg APP_ENV=dev -t $(DOCKER_IMAGE) 
 
 docker-build-dev-ubuntu:
-	docker build . -f Dockerfile.ubuntu --build-arg APP_ENV=dev -t $(DOCKER_IMAGE) 
+	docker build . -f docker/Dockerfile.ubuntu --build-arg APP_ENV=dev -t $(DOCKER_IMAGE) 
 
 # Quick run; assumes a postgres reachable per mosquitto.conf DSN
-docker-run-http:
+docker-run-origin:
 	docker run --rm -it \
 	  -p 1883:1883 -p 9001:9001 -p 9002:9002 \
 	  -w /mosquitto \
@@ -60,3 +65,16 @@ docker-bash:
 
 api-clients:
 	curl http://localhost:9002/api/clients
+
+# password_file:
+# 	touch ./config/password_file
+# 	chmod 0700 ./config/password_file
+# 	mosquitto_passwd -b ./config/password_file ${MOSQUITTO_USER_OPS} ${MOSQUITTO_PASSWORD_OPS}
+# 	mosquitto_passwd -b ./config/password_file ${MOSQUITTO_USER_APP_WEB} ${MOSQUITTO_PASSWORD_APP_WEB}
+
+# acl_file:
+# 	envsubst < ./config/acl_file.tmpl > ./config/acl_file
+# 	chmod 0700 ./config/acl_file
+
+setup:
+	config/setup.sh
