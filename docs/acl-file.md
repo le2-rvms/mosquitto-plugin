@@ -1,26 +1,33 @@
-# Mosquitto 内建 ACL（acl_file）规范
+# PRD：内建 ACL（acl_file）规范
 
-本文档描述内建 ACL 的最佳实践与示例配置。
+**文档状态**：正式 PRD
+**适用范围**：内建 `acl_file` 规则与配置示例
 
-## 1. 设计原则
+## 1. 目标
+
+- ACL 采用内建 `acl_file`，不依赖插件。
+- 使用统一规则控制设备、运维、管理端访问范围。
+
+## 2. 非目标
+
+- 不引入插件级 ACL（`MOSQ_EVT_ACL_CHECK`）。
+- 不提供运行时动态 ACL 更新能力。
+
+## 3. 设计原则
 
 - **最小权限**：默认拒绝或仅放行必要主题。
 - **按角色拆分**：运维/设备/应用分别配置。
 - **按前缀划分**：每类客户端只访问其 namespace。
 - **写权限谨慎**：写入主题尽量更精确，不允许 `#` 通配。
 
-## 2. 推荐 ACL 示例
-
-以下示例满足：
-
-- 运维账户（`_ops`）拥有管理权限。
-- 设备账户只能访问自己的主题。
-- 应用服务账户按租户前缀访问。
+## 4. 推荐 ACL 示例
 
 ```conf
 # 全局规则（不在 user 块中，对所有用户生效）
 # 设备账户：仅访问自身设备主题（假设 username 与 clientid 同名）
 pattern readwrite v1/d/%c/#
+pattern readwrite v2/d/%c/#
+pattern readwrite v3/d/%c/#
 
 # 运维账户：读写全局，但建议保留 $SYS 只读
 user _ops
@@ -32,16 +39,24 @@ topic readwrite v1/#
 # 管理端账户：允许管理端读写所有业务主题
 user app_web
 topic readwrite v1/#
+topic readwrite v2/#
+topic readwrite v3/#
 
 # 默认兜底：不匹配则拒绝
 ```
 
 > 提示：Mosquitto `pattern` 使用 `%u`(username) / `%c`(clientid)。
 
-## 3. Mosquitto 配置示例
+## 5. Mosquitto 配置示例
 
 ```conf
 allow_anonymous false
 password_file /mosquitto/config/password_file
 acl_file /mosquitto/config/acl_file
 ```
+
+## 6. 验收清单
+
+- 设备账号只能访问自身主题。
+- 运维账号可读 $SYS 并可访问业务主题。
+- 管理端账号可访问业务主题。

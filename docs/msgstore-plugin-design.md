@@ -1,6 +1,15 @@
-# msgstore-plugin 独立设计（异步入库，保持 queueplugin 不变）
+# PRD：msgstore-plugin 独立设计（异步入库）
 
-本文设计一个**独立的新插件**用于异步写 PostgreSQL，目标是：
+**文档状态**：正式 PRD（规划中，暂不实现）
+**适用范围**：独立 msgstore 插件设计
+
+本文档设计一个**独立的新插件**用于异步写 PostgreSQL，目标是：
+
+## PRD 概览
+
+- 背景：需要异步入库，避免影响 MQTT 主链路，同时不改动现有 `queueplugin`。
+- 目标：新增独立插件处理 `MOSQ_EVT_MESSAGE`，内存队列 + worker 异步写 PostgreSQL。
+- 非目标：不替换现有 RabbitMQ 路径；不处理 connect/disconnect。
 
 - 不修改现有 `plugin/queueplugin/` 代码和行为。
 - 新增目录实现独立插件（建议目录名：`msgstoreplugin/`）。

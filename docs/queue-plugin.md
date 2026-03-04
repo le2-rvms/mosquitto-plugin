@@ -1,6 +1,15 @@
-# 消息推送队列插件（RabbitMQ 设计说明）
+# PRD：消息推送队列插件（RabbitMQ）
 
-本文档描述新增的 Mosquitto 插件：把 Broker 收到的消息推送到 RabbitMQ，用作实现依据。
+**文档状态**：正式 PRD
+**适用范围**：`queueplugin`（RabbitMQ）
+
+本文档描述 Mosquitto 插件：把 Broker 收到的消息推送到 RabbitMQ，用作实现依据。
+
+## PRD 概览
+
+- 背景：需要将 MQTT 上行消息异步转发到 RabbitMQ，供下游消费。
+- 目标：仅处理 `MOSQ_EVT_MESSAGE`；入队异步发送；固定 JSON 消息格式。
+- 非目标：不负责 PostgreSQL 入库（由独立 msgstore 方案处理）；不处理 connect/disconnect。
 
 说明：
 

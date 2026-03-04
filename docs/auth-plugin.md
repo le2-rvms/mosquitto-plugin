@@ -1,6 +1,15 @@
-# 认证插件（PostgreSQL）当前实现说明
+# PRD：认证插件（PostgreSQL）
+
+**文档状态**：正式 PRD
+**适用范围**：`auth-plugin` 的实现与使用
 
 本文档描述 `auth-plugin` 的当前实现，内容以源码为准（`plugin/authplugin/auth_plugin.c`、`plugin/authplugin/auth_cgo.go`、`plugin/authplugin/auth_db.go`、`plugin/authplugin/auth_types.go`、`internal/pluginutil/hash.go`）。
+
+## PRD 概览
+
+- 背景：需要对 MQTT CONNECT 做数据库认证，并记录认证结果事件。
+- 目标：仅处理 BASIC_AUTH；认证数据来源 PostgreSQL；认证结果写入 `client_auth_events`。
+- 非目标：不实现 ACL 判定；不提供 HTTP 认证；不覆盖非 CONNECT 事件。
 
 当前功能范围（实现层面）：仅处理 CONNECT 认证（BASIC_AUTH），ACL 未启用；认证数据来源 PostgreSQL，不经 HTTP；每次认证结果写入 `client_auth_events`。
 
