@@ -6,33 +6,6 @@ import (
 	"time"
 )
 
-func TestParseBoolOption(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		input  string
-		want   bool
-		wantOK bool
-	}{
-		{"true lowercase", "true", true, true},
-		{"true numeric", "1", true, true},
-		{"false uppercase", "FALSE", false, true},
-		{"trim whitespace", "  yes  ", true, true},
-		{"invalid", "maybe", false, false},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, ok := ParseBoolOption(tc.input)
-			if got != tc.want || ok != tc.wantOK {
-				t.Fatalf("ParseBoolOption(%q) = (%v, %v), want (%v, %v)", tc.input, got, ok, tc.want, tc.wantOK)
-			}
-		})
-	}
-}
-
 func TestParseTimeoutMS(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

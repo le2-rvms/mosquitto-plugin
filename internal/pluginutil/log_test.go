@@ -15,9 +15,6 @@ func TestFormatLogMessage(t *testing.T) {
 func TestFormatLogMessageNoFields(t *testing.T) {
 	t.Parallel()
 
-	if got := FormatLogMessage("msg"); got != "msg" {
-		t.Fatalf("FormatLogMessage without fields = %q, want %q", got, "msg")
-	}
 	if got := FormatLogMessage("msg", nil); got != "msg" {
 		t.Fatalf("FormatLogMessage with nil fields = %q, want %q", got, "msg")
 	}

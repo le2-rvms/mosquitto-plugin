@@ -32,18 +32,6 @@ func OptionalString(s string) any {
 	return s
 }
 
-// ParseBoolOption 解析常见的布尔配置值。
-func ParseBoolOption(v string) (value bool, ok bool) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "t", "yes", "y", "on":
-		return true, true
-	case "0", "false", "f", "no", "n", "off":
-		return false, true
-	default:
-		return false, false
-	}
-}
-
 // ParseTimeoutMS 从配置中解析毫秒超时。
 func ParseTimeoutMS(v string) (time.Duration, bool) {
 	n, err := strconv.Atoi(strings.TrimSpace(v))
@@ -51,18 +39,4 @@ func ParseTimeoutMS(v string) (time.Duration, bool) {
 		return 0, false
 	}
 	return time.Duration(n) * time.Millisecond, true
-}
-
-// ProtocolString 将协议版本号转为字符串。
-func ProtocolString(version int) string {
-	switch version {
-	case 3:
-		return "MQTT/3.1"
-	case 4:
-		return "MQTT/3.1.1"
-	case 5:
-		return "MQTT/5.0"
-	default:
-		return ""
-	}
 }

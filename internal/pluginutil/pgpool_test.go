@@ -2,79 +2,56 @@ package pluginutil
 
 import (
 	"context"
-	"errors"
-	"sync"
+	"os"
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"time"
 )
 
-func TestEnsureSharedPGPoolExisting(t *testing.T) {
-	mu := &sync.RWMutex{}
-	existing := &pgxpool.Pool{}
-	holder := existing
-
-	oldFactory := newDefaultPGPool
-	t.Cleanup(func() { newDefaultPGPool = oldFactory })
-	newDefaultPGPool = func(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-		t.Fatal("factory should not be called when holder already exists")
-		return nil, nil
+func TestSharedPGPoolEnsureCreateError(t *testing.T) {
+	var holder SharedPGPool
+	p, created, err := holder.Ensure(context.Background(), "://bad")
+	if err == nil {
+		t.Fatal("SharedPGPool.Ensure should return error on invalid dsn")
 	}
-
-	p, ev, err := EnsureSharedPGPool(context.Background(), mu, &holder, "postgres://x")
-	if err != nil {
-		t.Fatalf("EnsureSharedPGPool returned error: %v", err)
+	if p != nil {
+		t.Fatalf("pool should remain nil on error: p=%p", p)
 	}
-	if p != existing {
-		t.Fatalf("returned pool mismatch: got %p want %p", p, existing)
-	}
-	if ev != PGPoolEventNone {
-		t.Fatalf("event mismatch: got %v want %v", ev, PGPoolEventNone)
+	if created {
+		t.Fatal("created mismatch: got true want false")
 	}
 }
 
-func TestEnsureSharedPGPoolCreates(t *testing.T) {
-	mu := &sync.RWMutex{}
-	var holder *pgxpool.Pool
-	created := &pgxpool.Pool{}
-
-	oldFactory := newDefaultPGPool
-	t.Cleanup(func() { newDefaultPGPool = oldFactory })
-	newDefaultPGPool = func(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-		return created, nil
+func TestSharedPGPoolEnsureCreatesWhenDSNReachable(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		// 本地/CI 未配置数据库时跳过，避免把单测强绑定外部依赖。
+		t.Skip("set TEST_PG_DSN to run integration create-path test")
 	}
 
-	p, ev, err := EnsureSharedPGPool(context.Background(), mu, &holder, "postgres://x")
+	var holder SharedPGPool
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	p, created, err := holder.Ensure(ctx, dsn)
 	if err != nil {
-		t.Fatalf("EnsureSharedPGPool returned error: %v", err)
+		t.Fatalf("SharedPGPool.Ensure returned error: %v", err)
 	}
-	if p != created || holder != created {
-		t.Fatalf("created pool mismatch: got p=%p holder=%p want=%p", p, holder, created)
+	if p == nil {
+		t.Fatalf("pool should be created: p=%p", p)
 	}
-	if ev != PGPoolEventConnected {
-		t.Fatalf("event mismatch: got %v want %v", ev, PGPoolEventConnected)
+	if !created {
+		t.Fatal("created mismatch: got false want true")
 	}
-}
+	t.Cleanup(holder.Close)
 
-func TestEnsureSharedPGPoolCreateError(t *testing.T) {
-	mu := &sync.RWMutex{}
-	var holder *pgxpool.Pool
-	wantErr := errors.New("dial failed")
-
-	oldFactory := newDefaultPGPool
-	t.Cleanup(func() { newDefaultPGPool = oldFactory })
-	newDefaultPGPool = func(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-		return nil, wantErr
+	p2, created2, err := holder.Ensure(ctx, dsn)
+	if err != nil {
+		t.Fatalf("SharedPGPool.Ensure(second) returned error: %v", err)
 	}
-
-	p, ev, err := EnsureSharedPGPool(context.Background(), mu, &holder, "postgres://x")
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("error mismatch: got %v want %v", err, wantErr)
+	if p2 != p {
+		t.Fatalf("second call should reuse pool: got=%p want=%p", p2, p)
 	}
-	if p != nil || holder != nil {
-		t.Fatalf("pool should remain nil on error: p=%p holder=%p", p, holder)
-	}
-	if ev != PGPoolEventNone {
-		t.Fatalf("event mismatch: got %v want %v", ev, PGPoolEventNone)
+	if created2 {
+		t.Fatal("created(second) mismatch: got true want false")
 	}
 }

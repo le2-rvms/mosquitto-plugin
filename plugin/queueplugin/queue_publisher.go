@@ -15,7 +15,41 @@ type amqpPublisher struct {
 	conn *amqp.Connection
 	ch   *amqp.Channel
 
+	dsn            string
+	exchange       string
+	routingKey     string
+	publishTimeout time.Duration
+
 	nextDial time.Time
+}
+
+// newAMQPPublisher 基于当前配置创建发布器实例，避免方法内部依赖全局 cfg。
+func newAMQPPublisher(cfg config) *amqpPublisher {
+	return &amqpPublisher{
+		dsn:            cfg.dsn,
+		exchange:       cfg.exchange,
+		routingKey:     cfg.routingKey,
+		publishTimeout: cfg.publishTimeout,
+	}
+}
+
+// Reset 关闭并清理发布器状态；用于插件重载和退出场景。
+func (p *amqpPublisher) Reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closeLocked()
+	p.nextDial = time.Time{}
+}
+
+// Warmup 预热连接和通道，失败时会回收半初始化资源。
+func (p *amqpPublisher) Warmup() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.ensureLocked(); err != nil {
+		p.closeLocked()
+		return err
+	}
+	return nil
 }
 
 func (p *amqpPublisher) closeLocked() {
@@ -41,8 +75,8 @@ func (p *amqpPublisher) ensureLocked() error {
 		if !p.nextDial.IsZero() && time.Now().Before(p.nextDial) {
 			return errors.New("queue-plugin: reconnect backoff")
 		}
-		conn, err := amqp.DialConfig(cfg.dsn, amqp.Config{
-			Dial: amqp.DefaultDial(cfg.publishTimeout),
+		conn, err := amqp.DialConfig(p.dsn, amqp.Config{
+			Dial: amqp.DefaultDial(p.publishTimeout),
 		})
 		if err != nil {
 			p.nextDial = time.Now().Add(1 * time.Second)
@@ -50,7 +84,7 @@ func (p *amqpPublisher) ensureLocked() error {
 		}
 		p.nextDial = time.Time{}
 		p.conn = conn
-		log(mosqLogInfo, "queue-plugin: connected to rabbitmq")
+		log(mosqLogInfo, "queue-plugin: connected to rabbitmq", nil)
 	}
 	if p.ch == nil {
 		ch, err := p.conn.Channel()
@@ -60,7 +94,7 @@ func (p *amqpPublisher) ensureLocked() error {
 			return err
 		}
 		p.ch = ch
-		log(mosqLogDebug, "queue-plugin: channel opened")
+		log(mosqLogDebug, "queue-plugin: channel opened", nil)
 	}
 	return nil
 }
@@ -74,7 +108,7 @@ func (p *amqpPublisher) Publish(ctx context.Context, body []byte) error {
 		return err
 	}
 
-	err := p.ch.PublishWithContext(ctx, cfg.exchange, cfg.routingKey, false, false, amqp.Publishing{
+	err := p.ch.PublishWithContext(ctx, p.exchange, p.routingKey, false, false, amqp.Publishing{
 		ContentType: "application/json",
 		Body:        body,
 	})
@@ -87,7 +121,7 @@ func (p *amqpPublisher) Publish(ctx context.Context, body []byte) error {
 		if err2 := p.ensureLocked(); err2 != nil {
 			return err
 		}
-		return p.ch.PublishWithContext(ctx, cfg.exchange, cfg.routingKey, false, false, amqp.Publishing{
+		return p.ch.PublishWithContext(ctx, p.exchange, p.routingKey, false, false, amqp.Publishing{
 			ContentType: "application/json",
 			Body:        body,
 		})

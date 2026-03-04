@@ -1,95 +1,44 @@
 package main
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
 func resetConnState() {
-	activeConnMu.Lock()
-	activeConn = map[uintptr]struct{}{}
-	activeConnMu.Unlock()
+	activeConnections.Reset()
 	debugSkipCounter = 0
 	debugRecordCounter = 0
 }
 
-func TestHandleDisconnectByKeyAlwaysClearsState(t *testing.T) {
-	oldDebugLogger := debugLogger
-	oldWarnLogger := warnLogger
-	t.Cleanup(func() {
-		debugLogger = oldDebugLogger
-		warnLogger = oldWarnLogger
-	})
-	debugLogger = func(string, map[string]any) {}
-	warnLogger = func(string, map[string]any) {}
-
+func TestConsumeConnectedClearsState(t *testing.T) {
 	resetConnState()
 	key := uintptr(12345)
-	setConnectedByKey(key, true)
+	activeConnections.MarkConnected(key)
 
-	called := false
-	handleDisconnectByKey(key, func() error {
-		called = true
-		return errors.New("write failed")
-	})
-
-	if !called {
-		t.Fatal("record callback should be called")
+	if !activeConnections.ConsumeConnected(key) {
+		t.Fatal("ConsumeConnected should return true for connected key")
 	}
-	if connectedByKey(key) {
-		t.Fatal("connection state should be cleared even if record fails")
+	if activeConnections.ConsumeConnected(key) {
+		t.Fatal("connection state should be cleared after first ConsumeConnected")
 	}
 }
 
-func TestHandleDisconnectByKeySkipWhenNotConnected(t *testing.T) {
-	oldDebugLogger := debugLogger
-	oldWarnLogger := warnLogger
-	t.Cleanup(func() {
-		debugLogger = oldDebugLogger
-		warnLogger = oldWarnLogger
-	})
-	debugLogger = func(string, map[string]any) {}
-	warnLogger = func(string, map[string]any) {}
-
+func TestConsumeConnectedSkipWhenNotConnected(t *testing.T) {
 	resetConnState()
 	key := uintptr(999)
 
-	called := false
-	handleDisconnectByKey(key, func() error {
-		called = true
-		return nil
-	})
-
-	if called {
-		t.Fatal("record callback should not be called for non-connected key")
+	if activeConnections.ConsumeConnected(key) {
+		t.Fatal("ConsumeConnected should return false for non-connected key")
 	}
 }
 
-func TestHandleDisconnectByKeyIdempotent(t *testing.T) {
-	oldDebugLogger := debugLogger
-	oldWarnLogger := warnLogger
-	t.Cleanup(func() {
-		debugLogger = oldDebugLogger
-		warnLogger = oldWarnLogger
-	})
-	debugLogger = func(string, map[string]any) {}
-	warnLogger = func(string, map[string]any) {}
-
+func TestConsumeConnectedIdempotent(t *testing.T) {
 	resetConnState()
 	key := uintptr(123)
-	setConnectedByKey(key, true)
+	activeConnections.MarkConnected(key)
 
-	called := 0
-	handleDisconnectByKey(key, func() error {
-		called++
-		return nil
-	})
-	handleDisconnectByKey(key, func() error {
-		called++
-		return nil
-	})
-
-	if called != 1 {
-		t.Fatalf("record callback should be called once, got=%d", called)
+	if !activeConnections.ConsumeConnected(key) {
+		t.Fatal("first ConsumeConnected should return true")
+	}
+	if activeConnections.ConsumeConnected(key) {
+		t.Fatal("second ConsumeConnected should return false")
 	}
 }

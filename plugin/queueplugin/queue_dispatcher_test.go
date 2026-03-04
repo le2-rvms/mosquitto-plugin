@@ -6,33 +6,52 @@ import (
 	"time"
 )
 
-func withDispatcherTestSetup(t *testing.T, fn func(release chan struct{})) {
+// newQueueWorkerForTest 只在测试中使用，避免把测试注入接口暴露到生产代码。
+func newQueueWorkerForTest(
+	publish func([]byte),
+	stopWait time.Duration,
+	onStopTimeout func(wait time.Duration, pending int),
+) *queueWorker {
+	if publish == nil {
+		publish = func([]byte) {}
+	}
+	if stopWait <= 0 {
+		stopWait = defaultDispatchStopWait
+	}
+	if onStopTimeout == nil {
+		onStopTimeout = defaultDispatchStopTimeout
+	}
+	return &queueWorker{
+		publish:       publish,
+		stopWait:      stopWait,
+		onStopTimeout: onStopTimeout,
+	}
+}
+
+func withDispatcherTestSetup(t *testing.T, fn func(d *queueWorker, release chan struct{})) {
 	t.Helper()
 
 	oldCfg := cfg
-	oldPublish := dispatchPublishFn
 	release := make(chan struct{})
+	d := newQueueWorkerForTest(func([]byte) { <-release }, defaultDispatchStopWait, defaultDispatchStopTimeout)
 
 	cfg.enqueueTimeout = 20 * time.Millisecond
 	cfg.publishTimeout = 20 * time.Millisecond
-	dispatchPublishFn = func([]byte) { <-release }
-	stopDispatcher()
-	startDispatcher(1)
+	d.Start(1)
 
 	t.Cleanup(func() {
 		close(release)
-		stopDispatcher()
-		dispatchPublishFn = oldPublish
+		d.Stop()
 		cfg = oldCfg
 	})
 
-	fn(release)
+	fn(d, release)
 }
 
-func fillQueueUntilFull(t *testing.T) {
+func fillQueueUntilFull(t *testing.T, d *queueWorker) {
 	t.Helper()
 	for i := 0; i < 256; i++ {
-		err := enqueueMessage([]byte("x"))
+		err := d.Enqueue([]byte("x"), cfg.failMode, cfg.enqueueTimeout)
 		if errors.Is(err, errQueueFull) || errors.Is(err, errEnqueueTimeout) {
 			return
 		}
@@ -41,96 +60,85 @@ func fillQueueUntilFull(t *testing.T) {
 }
 
 func TestEnqueueMessageDropWhenFull(t *testing.T) {
-	withDispatcherTestSetup(t, func(release chan struct{}) {
+	withDispatcherTestSetup(t, func(d *queueWorker, release chan struct{}) {
 		cfg.failMode = failModeDrop
-		fillQueueUntilFull(t)
+		fillQueueUntilFull(t, d)
 
-		err := enqueueMessage([]byte("x"))
+		err := d.Enqueue([]byte("x"), cfg.failMode, cfg.enqueueTimeout)
 		if !errors.Is(err, errQueueFull) {
-			t.Fatalf("enqueueMessage(drop) got err=%v want=%v", err, errQueueFull)
+			t.Fatalf("enqueue(drop) got err=%v want=%v", err, errQueueFull)
 		}
 	})
 }
 
 func TestEnqueueMessageDisconnectWhenFull(t *testing.T) {
-	withDispatcherTestSetup(t, func(release chan struct{}) {
+	withDispatcherTestSetup(t, func(d *queueWorker, release chan struct{}) {
 		cfg.failMode = failModeDisconnect
-		fillQueueUntilFull(t)
+		fillQueueUntilFull(t, d)
 
-		err := enqueueMessage([]byte("x"))
+		err := d.Enqueue([]byte("x"), cfg.failMode, cfg.enqueueTimeout)
 		if !errors.Is(err, errQueueFull) {
-			t.Fatalf("enqueueMessage(disconnect) got err=%v want=%v", err, errQueueFull)
+			t.Fatalf("enqueue(disconnect) got err=%v want=%v", err, errQueueFull)
 		}
 	})
 }
 
 func TestEnqueueMessageBlockTimeout(t *testing.T) {
-	withDispatcherTestSetup(t, func(release chan struct{}) {
+	withDispatcherTestSetup(t, func(d *queueWorker, release chan struct{}) {
 		cfg.failMode = failModeBlock
 		cfg.enqueueTimeout = 10 * time.Millisecond
-		fillQueueUntilFull(t)
+		fillQueueUntilFull(t, d)
 
 		start := time.Now()
-		err := enqueueMessage([]byte("x"))
+		err := d.Enqueue([]byte("x"), cfg.failMode, cfg.enqueueTimeout)
 		if !errors.Is(err, errEnqueueTimeout) {
-			t.Fatalf("enqueueMessage(block) got err=%v want=%v", err, errEnqueueTimeout)
+			t.Fatalf("enqueue(block) got err=%v want=%v", err, errEnqueueTimeout)
 		}
 		if elapsed := time.Since(start); elapsed < 8*time.Millisecond {
-			t.Fatalf("enqueueMessage(block) timeout too short: %v", elapsed)
+			t.Fatalf("enqueue(block) timeout too short: %v", elapsed)
 		}
 	})
 }
 
 func TestEnqueueMessageStopped(t *testing.T) {
-	oldCfg := cfg
-	t.Cleanup(func() { cfg = oldCfg })
-
-	stopDispatcher()
-	cfg.failMode = failModeDrop
-	cfg.enqueueTimeout = 10 * time.Millisecond
-
-	err := enqueueMessage([]byte("x"))
+	d := newQueueWorkerForTest(func([]byte) {}, defaultDispatchStopWait, defaultDispatchStopTimeout)
+	err := d.Enqueue([]byte("x"), failModeDrop, 10*time.Millisecond)
 	if !errors.Is(err, errDispatcherStopped) {
-		t.Fatalf("enqueueMessage(stopped) got err=%v want=%v", err, errDispatcherStopped)
+		t.Fatalf("enqueue(stopped) got err=%v want=%v", err, errDispatcherStopped)
 	}
 }
 
 func TestStopDispatcherBoundedWhenPublisherBlocked(t *testing.T) {
 	oldCfg := cfg
-	oldPublish := dispatchPublishFn
-	oldStopWait := dispatcherStopWait
-	oldStopTimeoutLogFn := dispatcherStopTimeoutLogFn
 	release := make(chan struct{})
 	started := make(chan struct{})
 	timeoutLogged := false
+	d := newQueueWorkerForTest(
+		func([]byte) {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			<-release
+		},
+		15*time.Millisecond,
+		func(time.Duration, int) {
+			timeoutLogged = true
+		},
+	)
 
 	cfg.enqueueTimeout = 10 * time.Millisecond
-	dispatchPublishFn = func([]byte) {
-		select {
-		case <-started:
-		default:
-			close(started)
-		}
-		<-release
-	}
-	dispatcherStopWait = 15 * time.Millisecond
-	dispatcherStopTimeoutLogFn = func(time.Duration, int) {
-		timeoutLogged = true
-	}
 
 	t.Cleanup(func() {
 		close(release)
-		stopDispatcher()
-		dispatchPublishFn = oldPublish
-		dispatcherStopWait = oldStopWait
-		dispatcherStopTimeoutLogFn = oldStopTimeoutLogFn
+		d.Stop()
 		cfg = oldCfg
 	})
 
-	stopDispatcher()
-	startDispatcher(1)
-	if err := enqueueMessage([]byte("x")); err != nil {
-		t.Fatalf("enqueueMessage failed: %v", err)
+	d.Start(1)
+	if err := d.Enqueue([]byte("x"), cfg.failMode, cfg.enqueueTimeout); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
 	}
 	select {
 	case <-started:
@@ -139,9 +147,9 @@ func TestStopDispatcherBoundedWhenPublisherBlocked(t *testing.T) {
 	}
 
 	start := time.Now()
-	stopDispatcher()
+	d.Stop()
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
-		t.Fatalf("stopDispatcher took too long: %v", elapsed)
+		t.Fatalf("stop took too long: %v", elapsed)
 	}
 	if !timeoutLogged {
 		t.Fatal("expected timeout warning hook to be called")

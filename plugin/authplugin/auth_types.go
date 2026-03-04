@@ -1,10 +1,9 @@
 package main
 
 import (
-	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"mosquitto-plugin/internal/pluginutil"
 )
 
 const (
@@ -38,8 +37,15 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 var (
-	pool   *pgxpool.Pool
-	poolMu sync.RWMutex
+	// poolHolder 负责认证插件的 PostgreSQL 连接池生命周期管理。
+	poolHolder pluginutil.SharedPGPool
+	// authPGPoolOptions 定义认证插件默认连接池参数。
+	authPGPoolOptions = pluginutil.PGPoolOptions{
+		MaxConns:          16,
+		MinConns:          2,
+		MaxConnIdleTime:   60 * time.Second,
+		HealthCheckPeriod: 30 * time.Second,
+	}
 
 	pgDSN    string // postgres://user:pass@host:5432/db?sslmode=verify-full
 	timeout  = defaultTimeout

@@ -23,7 +23,6 @@ import (
 	"errors"
 	"os"
 	"runtime/debug"
-	"strings"
 	"time"
 	"unsafe"
 
@@ -39,8 +38,12 @@ const (
 	mosqLogError   = int(C.MOSQ_LOG_ERR)
 )
 
-func log(level int, msg string, fields ...map[string]any) {
-	cs := C.CString(pluginutil.FormatLogMessage(msg, fields...))
+func log(level int, msg string, fields map[string]any) {
+	// 单测场景可能直接调用逻辑函数，此时插件尚未初始化，跳过 C 日志桥接。
+	if pid == nil {
+		return
+	}
+	cs := C.CString(pluginutil.FormatLogMessage(msg, fields))
 	defer C.free(unsafe.Pointer(cs))
 	C.go_mosq_log(C.int(level), cs)
 }
@@ -150,15 +153,17 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 	debugPublishCounter = 0
 	workerWarnCounter = 0
 	backpressureCounter = 0
-	publisher.mu.Lock()
-	publisher.closeLocked()
-	publisher.nextDial = time.Time{}
-	publisher.mu.Unlock()
-	stopDispatcher()
+	// 插件重载前先清理旧连接状态，避免沿用失效通道。
+	if publisher != nil {
+		publisher.Reset()
+		publisher = nil
+	}
+	if defaultQueueWorker != nil {
+		defaultQueueWorker.Stop()
+		defaultQueueWorker = nil
+	}
 
 	cfg = config{
-		backend:        "rabbitmq",
-		exchangeType:   "direct",
 		enqueueTimeout: 1000 * time.Millisecond,
 		publishTimeout: 1000 * time.Millisecond,
 		failMode:       failModeDrop,
@@ -170,18 +175,10 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 	for _, o := range unsafe.Slice(opts, int(optCount)) {
 		k, v := cstr(o.key), cstr(o.value)
 		switch k {
-		case "queue_backend":
-			if v != "" {
-				cfg.backend = strings.ToLower(strings.TrimSpace(v))
-			}
 		case "queue_dsn":
 			cfg.dsn = v
 		case "queue_exchange":
 			cfg.exchange = v
-		case "queue_exchange_type":
-			if v != "" {
-				cfg.exchangeType = strings.ToLower(strings.TrimSpace(v))
-			}
 		case "queue_routing_key":
 			cfg.routingKey = v
 		case "queue_timeout_ms":
@@ -213,44 +210,42 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 		}
 	}
 
-	if cfg.backend != "rabbitmq" {
-		log(mosqLogError, "queue-plugin: unsupported backend", map[string]any{"backend": cfg.backend, "expected": "rabbitmq"})
-		return C.MOSQ_ERR_INVAL
-	}
-	if cfg.exchangeType != "direct" {
-		log(mosqLogError, "queue-plugin: exchange_type must be direct")
-		return C.MOSQ_ERR_INVAL
-	}
 	if cfg.dsn == "" || cfg.exchange == "" {
-		log(mosqLogError, "queue-plugin: queue_dsn and queue_exchange must be set")
+		log(mosqLogError, "queue-plugin: queue_dsn and queue_exchange must be set", nil)
 		return C.MOSQ_ERR_INVAL
 	}
 
 	log(mosqLogInfo, "queue-plugin: init", map[string]any{
-		"backend":            cfg.backend,
+		"backend":            queueBackendRabbitMQ,
 		"dsn":                pluginutil.SafeDSN(cfg.dsn),
 		"exchange":           cfg.exchange,
-		"exchange_type":      cfg.exchangeType,
+		"exchange_type":      queueExchangeTypeDirect,
 		"routing_key":        cfg.routingKey,
 		"enqueue_timeout_ms": int(cfg.enqueueTimeout / time.Millisecond),
 		"publish_timeout_ms": int(cfg.publishTimeout / time.Millisecond),
 		"fail_mode":          failModeString(cfg.failMode),
 	})
 
-	publisher.mu.Lock()
-	if err := publisher.ensureLocked(); err != nil {
-		log(mosqLogWarning, "queue-plugin: initial connect failed", map[string]any{"error": err})
-		publisher.closeLocked()
-	}
-	publisher.mu.Unlock()
+	// 每次 init 按当前配置重建发布器和 worker，避免内部读旧全局配置。
+	publisher = newAMQPPublisher(cfg)
+	defaultQueueWorker = newQueueWorker(publisher, cfg.publishTimeout, defaultDispatchStopWait, defaultDispatchStopTimeout)
 
-	startDispatcher(defaultDispatchBuffer)
+	if err := publisher.Warmup(); err != nil {
+		log(mosqLogWarning, "queue-plugin: initial connect failed", map[string]any{"error": err})
+	}
+
+	defaultQueueWorker.Start(defaultDispatchBuffer)
 	if rc := C.register_event_callback(pid, C.MOSQ_EVT_MESSAGE, C.mosq_event_cb(C.message_cb_c)); rc != C.MOSQ_ERR_SUCCESS {
-		stopDispatcher()
+		defaultQueueWorker.Stop()
+		defaultQueueWorker = nil
+		if publisher != nil {
+			publisher.Reset()
+		}
+		publisher = nil
 		return rc
 	}
 
-	log(mosqLogInfo, "queue-plugin: plugin initialized")
+	log(mosqLogInfo, "queue-plugin: plugin initialized", nil)
 	return C.MOSQ_ERR_SUCCESS
 }
 
@@ -259,12 +254,15 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 //export go_mosq_plugin_cleanup
 func go_mosq_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_opt, optCount C.int) C.int {
 	C.unregister_event_callback(pid, C.MOSQ_EVT_MESSAGE, C.mosq_event_cb(C.message_cb_c))
-	stopDispatcher()
-	publisher.mu.Lock()
-	publisher.closeLocked()
-	publisher.nextDial = time.Time{}
-	publisher.mu.Unlock()
-	log(mosqLogInfo, "queue-plugin: plugin cleaned up")
+	if defaultQueueWorker != nil {
+		defaultQueueWorker.Stop()
+		defaultQueueWorker = nil
+	}
+	if publisher != nil {
+		publisher.Reset()
+		publisher = nil
+	}
+	log(mosqLogInfo, "queue-plugin: plugin cleaned up", nil)
 	return C.MOSQ_ERR_SUCCESS
 }
 
@@ -335,7 +333,10 @@ func message_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointe
 	if err != nil {
 		return failResult(err)
 	}
-	return failResult(enqueueMessage(body))
+	if defaultQueueWorker == nil {
+		return failResult(errDispatcherStopped)
+	}
+	return failResult(defaultQueueWorker.Enqueue(body, cfg.failMode, cfg.enqueueTimeout))
 }
 
 func main() {}

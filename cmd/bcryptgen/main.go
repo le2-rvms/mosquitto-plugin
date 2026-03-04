@@ -1,11 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
-
-	"mosquitto-plugin/internal/pluginutil"
 )
 
 var (
@@ -21,5 +21,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	fmt.Println(pluginutil.SHA256PwdSalt(*password, *salt))
+	// 与认证插件保持一致：password+salt 后做 SHA-256 十六进制输出。
+	sum := sha256.Sum256([]byte(*password + *salt))
+	fmt.Println(hex.EncodeToString(sum[:]))
 }

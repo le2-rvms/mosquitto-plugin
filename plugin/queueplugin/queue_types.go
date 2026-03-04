@@ -9,6 +9,11 @@ import (
 type failMode int
 
 const (
+	queueBackendRabbitMQ    = "rabbitmq"
+	queueExchangeTypeDirect = "direct"
+)
+
+const (
 	failModeDrop failMode = iota
 	failModeBlock
 	failModeDisconnect
@@ -19,10 +24,8 @@ const (
 
 // config 保存从 Mosquitto 配置解析出的运行参数。
 type config struct {
-	backend        string
 	dsn            string
 	exchange       string
-	exchangeType   string
 	routingKey     string
 	enqueueTimeout time.Duration
 	publishTimeout time.Duration
@@ -51,7 +54,7 @@ type userProperty struct {
 
 var (
 	cfg       config
-	publisher amqpPublisher
+	publisher *amqpPublisher
 
 	debugFilterCounter  uint64
 	debugPublishCounter uint64

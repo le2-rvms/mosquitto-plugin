@@ -18,6 +18,7 @@ void go_mosq_log(int level, const char* msg);
 import "C"
 
 import (
+	"context"
 	"os"
 	"runtime/debug"
 	"strings"
@@ -36,21 +37,16 @@ const (
 	mosqLogWarning = int(C.MOSQ_LOG_WARNING)
 	mosqLogError   = int(C.MOSQ_LOG_ERR)
 	mosqErrDefer   = int(C.MOSQ_ERR_PLUGIN_DEFER)
+	mosqErrAuth    = int(C.MOSQ_ERR_AUTH)
+	mosqErrSuccess = int(C.MOSQ_ERR_SUCCESS)
 )
 
-var (
-	dbAuthFn          = dbAuth
-	recordAuthEventFn = recordAuthEvent
-	infoLogger        = func(msg string, fields map[string]any) {
-		log(mosqLogInfo, msg, fields)
+func log(level int, msg string, fields map[string]any) {
+	// 单测场景可能直接调用逻辑函数，此时插件尚未初始化，跳过 C 日志桥接。
+	if pid == nil {
+		return
 	}
-	warnLogger = func(msg string, fields map[string]any) {
-		log(mosqLogWarning, msg, fields)
-	}
-)
-
-func log(level int, msg string, fields ...map[string]any) {
-	cs := C.CString(pluginutil.FormatLogMessage(msg, fields...))
+	cs := C.CString(pluginutil.FormatLogMessage(msg, fields))
 	defer C.free(unsafe.Pointer(cs))
 	C.go_mosq_log(C.int(level), cs)
 }
@@ -108,12 +104,8 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 	pgDSN = ""
 	timeout = defaultTimeout
 	failOpen = false
-	poolMu.Lock()
-	if pool != nil {
-		pool.Close()
-		pool = nil
-	}
-	poolMu.Unlock()
+	// 重载时先回收旧池，避免沿用过期配置。
+	poolHolder.Close()
 
 	if env := os.Getenv("PG_DSN"); env != "" {
 		pgDSN = env
@@ -130,7 +122,7 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 				log(mosqLogWarning, "auth-plugin: invalid timeout_ms", map[string]any{"value": value, "timeout_ms": int(timeout / time.Millisecond)})
 			}
 		case "fail_open":
-			if parsed, ok := pluginutil.ParseBoolOption(value); ok {
+			if parsed, ok := parseBoolOption(value); ok {
 				failOpen = parsed
 			} else {
 				log(mosqLogWarning, "auth-plugin: invalid fail_open", map[string]any{"value": value, "fail_open": failOpen})
@@ -138,7 +130,7 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 		}
 	}
 	if pgDSN == "" {
-		log(mosqLogError, "auth-plugin: pg_dsn must be set")
+		log(mosqLogError, "auth-plugin: pg_dsn must be set", nil)
 		return C.MOSQ_ERR_UNKNOWN
 	}
 	if _, err := pgxpool.ParseConfig(pgDSN); err != nil {
@@ -149,11 +141,18 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 	log(mosqLogInfo, "auth-plugin: initializing", map[string]any{"pg_dsn": pluginutil.SafeDSN(pgDSN), "timeout_ms": int(timeout / time.Millisecond), "fail_open": failOpen})
 
 	// 数据库暂不可用时不阻塞插件加载
-	ctx, cancel := pluginutil.TimeoutContext(timeout)
+	ctx := context.Background()
+	cancel := func() {}
+	// timeout<=0 时显式使用无超时上下文，避免启动阶段被意外取消。
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	}
 	defer cancel()
-	_, err := ensureAuthPool(ctx)
+	_, created, err := poolHolder.Ensure(ctx, pgDSN, authPGPoolOptions)
 	if err != nil {
 		log(mosqLogWarning, "auth-plugin: initial pg connection failed", map[string]any{"error": err.Error()})
+	} else if created {
+		log(mosqLogInfo, "auth-plugin: postgres pool connected", map[string]any{"pg_dsn": pluginutil.SafeDSN(pgDSN)})
 	}
 
 	// 注册回调
@@ -161,7 +160,7 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 		return rc
 	}
 
-	log(mosqLogInfo, "auth-plugin: plugin initialized")
+	log(mosqLogInfo, "auth-plugin: plugin initialized", nil)
 	return C.MOSQ_ERR_SUCCESS
 }
 
@@ -170,46 +169,42 @@ func go_mosq_plugin_init(id *C.mosquitto_plugin_id_t, userdata *unsafe.Pointer,
 //export go_mosq_plugin_cleanup
 func go_mosq_plugin_cleanup(userdata unsafe.Pointer, opts *C.struct_mosquitto_opt, optCount C.int) C.int {
 	C.unregister_event_callback(pid, C.MOSQ_EVT_BASIC_AUTH, C.mosq_event_cb(C.basic_auth_cb_c))
-	poolMu.Lock()
-	defer poolMu.Unlock()
-	if pool != nil {
-		pool.Close()
-		pool = nil
-	}
-	log(mosqLogInfo, "auth-plugin: plugin cleaned up")
+	poolHolder.Close()
+	log(mosqLogInfo, "auth-plugin: plugin cleaned up", nil)
 	return C.MOSQ_ERR_SUCCESS
-}
-
-func authResultCode(allow bool) C.int {
-	if allow {
-		return C.MOSQ_ERR_SUCCESS
-	}
-	return C.MOSQ_ERR_AUTH
 }
 
 func runBasicAuth(info pluginutil.ClientInfo, password string) C.int {
 	if info.Username == "" || strings.HasPrefix(info.Username, "_") {
 		return C.MOSQ_ERR_PLUGIN_DEFER
 	}
-	dbAllow, dbReason, err := dbAuthFn(info.Username, password, info.ClientID)
-	allow, result, reason := dbAllow, authResultFail, dbReason
-	if err != nil {
-		warnLogger("auth-plugin auth error", map[string]any{"error": err.Error()})
+
+	// 默认按拒绝处理；后续根据 DB 返回和 fail_open 逐步覆盖。
+	code := C.int(mosqErrAuth)
+	result := authResultFail
+	reason := ""
+
+	dbAllow, dbReason, dbErr := dbAuth(info.Username, password, info.ClientID)
+	reason = dbReason
+	if dbErr != nil {
 		reason = authReasonDBError
+		log(mosqLogWarning, "auth-plugin auth error", map[string]any{"error": dbErr.Error()})
 		if failOpen {
-			infoLogger("auth-plugin: fail_open allow auth", map[string]any{"reason": authReasonDBError})
-			allow = true
+			code = C.int(mosqErrSuccess)
 			result = authResultSuccess
 			reason = authReasonDBErrorFailOpen
+			log(mosqLogInfo, "auth-plugin: fail_open allow auth", map[string]any{"reason": authReasonDBError})
 		}
-	} else if allow {
+	} else if dbAllow {
+		code = C.int(mosqErrSuccess)
 		result = authResultSuccess
 	}
 
-	if err := recordAuthEventFn(info, result, reason); err != nil {
-		warnLogger("auth-plugin auth event log failed", map[string]any{"error": err.Error()})
+	if err := recordAuthEvent(info, result, reason); err != nil {
+		log(mosqLogWarning, "auth-plugin auth event log failed", map[string]any{"error": err.Error()})
 	}
-	return authResultCode(allow)
+
+	return code
 }
 
 // basic_auth_cb_c 执行认证逻辑并返回结果。
@@ -217,7 +212,7 @@ func runBasicAuth(info pluginutil.ClientInfo, password string) C.int {
 //export basic_auth_cb_c
 func basic_auth_cb_c(event C.int, event_data unsafe.Pointer, userdata unsafe.Pointer) C.int {
 	if event_data == nil {
-		warnLogger("auth-plugin: nil basic auth event_data", map[string]any{"event": int(event)})
+		log(mosqLogWarning, "auth-plugin: nil basic auth event_data", map[string]any{"event": int(event)})
 		return C.MOSQ_ERR_AUTH
 	}
 	ed := (*C.struct_mosquitto_evt_basic_auth)(event_data)

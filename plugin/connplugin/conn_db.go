@@ -4,29 +4,24 @@ import (
 	"context"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"mosquitto-plugin/internal/pluginutil"
 )
 
-func ensureConnPool(ctx context.Context) (*pgxpool.Pool, error) {
-	p, ev, err := pluginutil.EnsureSharedPGPool(ctx, &poolMu, &pool, pgDSN)
-	if err != nil {
-		return nil, err
+func recordEvent(info pluginutil.ClientInfo, eventType string, reasonCode *int) error {
+	ctx := context.Background()
+	cancel := func() {}
+	// timeout<=0 时保持无超时行为，便于排障时临时放开超时限制。
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
 	}
-	if ev == pluginutil.PGPoolEventConnected {
-		log(mosqLogInfo, "conn-plugin: postgres pool connected", map[string]any{"pg_dsn": pluginutil.SafeDSN(pgDSN)})
-	}
-	return p, nil
-}
-
-func recordEvent(info pluginutil.ClientInfo, eventType string, reasonCode any) error {
-	ctx, cancel := pluginutil.TimeoutContext(timeout)
 	defer cancel()
 
-	p, err := ensureConnPool(ctx)
+	p, created, err := poolHolder.Ensure(ctx, pgDSN, connPGPoolOptions)
 	if err != nil {
 		return err
+	}
+	if created {
+		log(mosqLogInfo, "conn-plugin: postgres pool connected", map[string]any{"pg_dsn": pluginutil.SafeDSN(pgDSN)})
 	}
 
 	ts := time.Now().UTC()
@@ -36,6 +31,11 @@ func recordEvent(info pluginutil.ClientInfo, eventType string, reasonCode any) e
 	} else {
 		disconnectTS = ts
 	}
+	// connect 事件没有 reason code，disconnect 则写入具体错误码。
+	var reasonArg any
+	if reasonCode != nil {
+		reasonArg = *reasonCode
+	}
 
 	_, err = p.Exec(ctx, recordEventSQL,
 		ts,
@@ -44,7 +44,7 @@ func recordEvent(info pluginutil.ClientInfo, eventType string, reasonCode any) e
 		pluginutil.OptionalString(info.Username),
 		pluginutil.OptionalString(info.Peer),
 		pluginutil.OptionalString(info.Protocol),
-		reasonCode,
+		reasonArg,
 		nil,
 		connectTS,
 		disconnectTS,

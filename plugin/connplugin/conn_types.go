@@ -1,10 +1,9 @@
 package main
 
 import (
-	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"mosquitto-plugin/internal/pluginutil"
 )
 
 const recordEventSQL = `
@@ -40,13 +39,19 @@ const (
 )
 
 var (
-	pool    *pgxpool.Pool
-	poolMu  sync.RWMutex
-	pgDSN   string
-	timeout = defaultTimeout
+	// poolHolder 统一管理连接事件插件的 PostgreSQL 连接池。
+	poolHolder pluginutil.SharedPGPool
+	// connPGPoolOptions 定义连接事件插件默认连接池参数。
+	connPGPoolOptions = pluginutil.PGPoolOptions{
+		MaxConns:          16,
+		MinConns:          2,
+		MaxConnIdleTime:   60 * time.Second,
+		HealthCheckPeriod: 30 * time.Second,
+	}
+	pgDSN      string
+	timeout    = defaultTimeout
 
-	activeConnMu sync.Mutex
-	activeConn   = map[uintptr]struct{}{}
+	activeConnections = newConnTracker()
 
 	debugSkipCounter   uint64
 	debugRecordCounter uint64
